@@ -54,8 +54,9 @@
     "directories": {
       "output": "dist-app"
     },
-  "asar": true,
-  "compression": "normal",
+    "asar": true,
+    "compression": "normal",
+    "publish": null,
     "electronLanguages": [
       "zh-CN",
       "en-US"
