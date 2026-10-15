@@ -131,7 +131,7 @@ function drawLogo(size) {
   return img;
 }
 
-/* ---------- ICO 编码（PNG 内嵌形式） ---------- */
+/* ---------- ICO 编码（标准 BMP 多尺寸，兼容所有解析器） ---------- */
 function pngToBmp32(size, rgba) {
   const stride = ((size * 4) + 3) & ~3;
   const padding = stride - size * 4;
@@ -153,38 +153,49 @@ function pngToBmp32(size, rgba) {
   return bmp;
 }
 
-function encodeICO(pngBuf, size) {
-  const bmp = pngToBmp32(size, pngBuf);
-  const ih = Buffer.alloc(40);
-  ih.writeUInt32BE(40, 0);
-  ih.writeUInt32BE(size, 4);
-  ih.writeUInt32BE(size, 8);
-  ih.writeUInt16BE(1, 12);
-  ih.writeUInt16BE(32, 14);
-  ih.writeUInt32BE(0, 16);
-  ih.writeUInt32BE(bmp.length, 20);
-  ih.writeUInt32BE(0, 24);
-  ih.writeUInt32BE(0, 28);
+function encodeICO() {
+  const sizes = [16, 32, 48, 64, 128, 256];
+  const parts = [Buffer.alloc(6)];
+  parts.push(Buffer.alloc(16 * sizes.length));
+  const entries = [];
 
-  const pngBytes = pngBuf.length;
-  const bmpBytes = ih.length + bmp.length;
-  const totalBytes = bmpBytes + pngBytes;
+  let cursor = 6 + 16 * sizes.length;
+  for (const s of sizes) {
+    const bmp = pngToBmp32(s, drawLogo(s));
+    const ih = Buffer.alloc(40);
+    ih.writeUInt32LE(40, 0);
+    ih.writeUInt32LE(s, 4);
+    ih.writeUInt32LE(s, 8);
+    ih.writeUInt16LE(1, 12);
+    ih.writeUInt16LE(32, 14);
+    ih.writeUInt32LE(0, 16);
+    ih.writeUInt32LE(bmp.length, 20);
 
-  const header = Buffer.alloc(6);
-  header.writeUInt16BE(0, 0);
-  header.writeUInt16BE(1, 2);
-  header.writeUInt16BE(1, 4);
+    const dataOffset = cursor;
+    const dataByteSize = ih.length + bmp.length;
+    entries.push({ width: s, height: s, planes: 1, bitCount: 32, dataByteSize, dataOffset });
+    cursor += dataByteSize;
+    parts.push(ih, bmp);
+  }
 
-  const dir = Buffer.alloc(16);
-  dir[0] = size >= 256 ? 0 : size;
-  dir[1] = size >= 256 ? 0 : size;
-  dir[2] = 0; dir[3] = 0;
-  dir.writeUInt16BE(1, 4);
-  dir.writeUInt16BE(32, 6);
-  dir.writeUInt32BE(totalBytes, 8);
-  dir.writeUInt32BE(22, 12);
+  parts[0].writeUInt16LE(0, 0);
+  parts[0].writeUInt16LE(1, 2);
+  parts[0].writeUInt16LE(entries.length, 4);
 
-  return Buffer.concat([header, dir, ih, bmp, pngBuf]);
+  const dirBuf = parts[1];
+  for (let i = 0; i < entries.length; i++) {
+    const e = entries[i];
+    const o = i * 16;
+    dirBuf[o] = e.width >= 256 ? 0 : e.width;
+    dirBuf[o + 1] = e.height >= 256 ? 0 : e.height;
+    dirBuf[o + 2] = 0;
+    dirBuf[o + 3] = 0;
+    dirBuf.writeUInt16LE(e.planes, o + 4);
+    dirBuf.writeUInt16LE(e.bitCount, o + 6);
+    dirBuf.writeUInt32LE(e.dataByteSize, o + 8);
+    dirBuf.writeUInt32LE(e.dataOffset, o + 12);
+  }
+  return Buffer.concat(parts);
 }
 
 /* ---------- ICNS 编码 ---------- */
@@ -239,9 +250,8 @@ function main() {
   fs.writeFileSync(path.join(BUILD_DIR, 'icon.png'), encodePNG(512, 512, png512));
   console.log('✓ build/icon.png  (512x512, Linux)');
 
-  const ico256 = drawLogo(256);
-  fs.writeFileSync(path.join(BUILD_DIR, 'icon.ico'), encodeICO(encodePNG(256, 256, ico256), 256));
-  console.log('✓ build/icon.ico  (256x256, Windows)');
+  fs.writeFileSync(path.join(BUILD_DIR, 'icon.ico'), encodeICO());
+  console.log('✓ build/icon.ico  (BMP 多尺寸 16-256, Windows)');
 
   fs.writeFileSync(path.join(BUILD_DIR, 'icon.icns'), makeICNS());
   console.log('✓ build/icon.icns (16..1024, macOS)');
