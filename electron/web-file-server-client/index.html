@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <title>局域网文件</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <main class="shell">
+    <header>
+      <div>
+        <p class="eyebrow">局域网文件服务</p>
+        <h1>文件互传</h1>
+      </div>
+      <button id="refresh" class="secondary" type="button">刷新</button>
+    </header>
+
+    <nav id="breadcrumbs" class="breadcrumbs" aria-label="当前目录"></nav>
+
+    <section class="upload-panel" aria-labelledby="upload-title">
+      <div>
+        <h2 id="upload-title">上传文件</h2>
+        <p>同一局域网的手机和电脑都可以浏览、下载和上传。同名文件不会覆盖。</p>
+      </div>
+      <div class="file-picker-group">
+        <label class="file-picker">
+          <span>选择文件</span>
+          <input id="file-input" type="file" multiple>
+        </label>
+        <label class="file-picker">
+          <span>选择文件夹</span>
+          <input id="folder-input" type="file" webkitdirectory directory multiple>
+        </label>
+      </div>
+      <div id="upload-queue" class="upload-queue" aria-live="polite"></div>
+    </section>
+
+    <p id="message" class="message" role="status" aria-live="polite"></p>
+    <section aria-labelledby="files-title">
+      <div class="list-heading">
+        <h2 id="files-title">文件列表</h2>
+        <span id="file-count"></span>
+      </div>
+      <ul id="file-list" class="file-list"></ul>
+    </section>
+  </main>
+  <script src="/app.js" defer></script>
+</body>
+</html>

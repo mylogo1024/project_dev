@@ -1,0 +1,11 @@
+node_modules
+dist
+dist-app
+build
+*.log
+.DS_Store
+config.json
+
+# 界面预览生成物
+preview
+tools/.preview-bundle.cjs

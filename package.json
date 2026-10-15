@@ -1,0 +1,124 @@
+{
+  "name": "daily-dev-toolbox",
+  "version": "1.0.0",
+  "description": "日常开发工具箱 - 跨平台开发工具集合（完全离线）",
+  "main": "electron/main.js",
+  "scripts": {
+    "dev": "concurrently \"npm run dev:react\" \"wait-on http://localhost:5173 && npm run dev:electron\"",
+    "dev:react": "vite",
+    "dev:electron": "electron .",
+    "build": "vite build",
+    "build:electron": "npm run build && electron-builder",
+    "build:mac": "npm run build && electron-builder --mac",
+    "build:win": "npm run build && electron-builder --win",
+    "build:linux": "npm run build && electron-builder --linux",
+    "test": "node --test test/*.test.js",
+    "preview:ui": "node tools/make-preview.js",
+    "check:preview": "node tools/check-install-preview.js",
+    "check:ipc": "node tools/check-ipc-contract.js",
+    "check:apksig": "node tools/verify-apk-signature.js",
+    "clean": "node tools/clean.js",
+    "clean:all": "node tools/clean.js --all",
+    "start": "npm run dev",
+    "review": "node tools/check-code-review.js"
+  },
+  "keywords": [
+    "apk",
+    "android",
+    "tools"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.2.1",
+    "concurrently": "^8.2.2",
+    "electron": "^28.0.0",
+    "electron-builder": "^24.9.1",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "vite": "^5.0.8",
+    "wait-on": "^7.2.0"
+  },
+  "dependencies": {
+    "jsqr": "^1.4.0",
+    "jszip": "^3.10.2",
+    "qrcode": "^1.5.4",
+    "xml2js": "^0.6.2"
+  },
+  "build": {
+    "appId": "com.dailydevtoolbox.app",
+    "productName": "日常开发工具箱",
+    "directories": {
+      "output": "dist-app"
+    },
+  "asar": true,
+  "compression": "normal",
+    "electronLanguages": [
+      "zh-CN",
+      "en-US"
+    ],
+    "files": [
+      "electron/**/*",
+      "dist/**/*",
+      "!**/*.map",
+      "!**/*.md",
+      "!**/test/**",
+      "!**/__tests__/**"
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ],
+      "icon": "build/icon.icns",
+      "identity": null,
+      "extendInfo": {
+        "NSCameraUsageDescription": "用于通过 USB 实时显示已连接 iPhone 的屏幕画面。",
+        "NSMicrophoneUsageDescription": "不会主动采集麦克风；系统投屏接口可能一并询问权限。"
+      }
+    },
+    "win": {
+      "asar": false,
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.ico"
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Development",
+      "icon": "build/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    }
+  }
+}
