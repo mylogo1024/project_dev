@@ -947,9 +947,8 @@ function BasicView({ info, onOpenDetail }) {
           </div>
           <div className="pi-hero-id">{app.identifier || '—'}</div>
           <div className="pi-hero-meta">
-            <span>版本 <b>{app.version_name || '—'}</b></span>
-            {!isIos && app.version_code ? <span>版本号 <b>{app.version_code}</b></span> : null}
-            {isIos && app.version_code ? <span>Build <b>{app.version_code}</b></span> : null}
+            <span>版本名称 <b>{app.version_name || '—'}</b></span>
+            <span>版本号 <b>{(isIos ? 'Build ' : '')}{(app.version_code && app.version_code !== '未知') ? app.version_code : '—'}</b></span>
             <span>{isIos ? '最低 iOS' : '最低 SDK'} <b>{app.min_os || '—'}</b></span>
             {app.target_os ? <span>目标 <b>{app.target_os}</b></span> : null}
             <span>大小 <b>{file.size_human || '—'}</b></span>
