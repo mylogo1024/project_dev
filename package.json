@@ -27,7 +27,10 @@
     "android",
     "tools"
   ],
-  "author": "",
+  "author": {
+    "name": "Daily Dev Toolbox",
+    "email": "lyzios@qq.com"
+  },
   "license": "MIT",
   "devDependencies": {
     "@vitejs/plugin-react": "^4.2.1",
@@ -89,7 +92,6 @@
       }
     },
     "win": {
-      "asar": false,
       "target": [
         {
           "target": "nsis",

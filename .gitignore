@@ -1,7 +1,10 @@
 node_modules
 dist
 dist-app
-build
+build/*
+!build/icon.png
+!build/icon.ico
+!build/icon.icns
 *.log
 .DS_Store
 config.json
