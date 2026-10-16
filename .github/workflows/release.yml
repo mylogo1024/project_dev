@@ -82,43 +82,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - uses: actions/download-artifact@v4
         with:
           path: releases
 
-      - name: Read version from package.json
-        id: version
-        shell: bash
-        run: |
-          VERSION=$(node -p "require('./package.json').version")
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "tag_name=v$VERSION" >> "$GITHUB_OUTPUT"
-          echo "Detected version: $VERSION"
-
-      - name: Check if release already exists
-        id: exists
-        shell: bash
+      - name: Read version and publish
         env:
-          TAG_NAME: v${{ steps.version.outputs.version }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
-            echo "Release $TAG_NAME already exists, skip."
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "Release $TAG_NAME not found, will publish."
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Publish release
-        if: steps.exists.outputs.exists == 'false'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.version.outputs.tag_name }}
-          name: ${{ steps.version.outputs.tag_name }}
-          files: releases/**/*
-          generate_release_notes: true
-          fail_on_unmatched_files: true
+          VERSION=$(node -p "require('./package.json').version")
+          TAG="v${VERSION}"
+          echo "Publishing release ${TAG}"
+          gh release delete "$TAG" --force -q 2>/dev/null || true
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --generate-notes \
+            releases/release-mac/* \
+            releases/release-win/* \
+            releases/release-linux/*
