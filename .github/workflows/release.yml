@@ -91,13 +91,29 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
           VERSION=$(node -p "require('./package.json').version")
           TAG="v${VERSION}"
           echo "Publishing release ${TAG}"
-          gh release delete "$TAG" --force -q 2>/dev/null || true
+          echo "--- Artifacts layout ---"
+          find releases -type f | sort || true
+          # 把 3 个平台产物直接平铺到 dist-files/
+          mkdir -p dist-files
+          for d in releases/release-mac releases/release-win releases/release-linux; do
+            if [[ -d "$d" ]]; then
+              cp -f "$d"/* dist-files/ 2>/dev/null || true
+            fi
+          done
+          echo "--- dist-files ---"
+          ls -la dist-files/
+          if [[ -z "$(ls -A dist-files 2>/dev/null)" ]]; then
+            echo "::error::No release artifacts found. Check build jobs succeeded and artifacts uploaded."
+            exit 1
+          fi
+          # 删除旧 release（忽略不存在的情况）
+          gh release delete "$TAG" --force -y 2>/dev/null || true
+          # 创建 release
           gh release create "$TAG" \
             --title "$TAG" \
             --generate-notes \
-            releases/release-mac/* \
-            releases/release-win/* \
-            releases/release-linux/*
+            $(find dist-files -type f | sort)
