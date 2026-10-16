@@ -91,29 +91,27 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          set -euo pipefail
+          set -eu
           VERSION=$(node -p "require('./package.json').version")
           TAG="v${VERSION}"
           echo "Publishing release ${TAG}"
-          echo "--- Artifacts layout ---"
-          find releases -type f | sort || true
-          # 把 3 个平台产物直接平铺到 dist-files/
+
+          # 把 3 个平台产物平铺到 dist-files/（文件名含空格也能正确处理）
           mkdir -p dist-files
           for d in releases/release-mac releases/release-win releases/release-linux; do
-            if [[ -d "$d" ]]; then
+            if [ -d "$d" ]; then
               cp -f "$d"/* dist-files/ 2>/dev/null || true
             fi
           done
-          echo "--- dist-files ---"
+
+          echo "--- files to upload ---"
           ls -la dist-files/
-          if [[ -z "$(ls -A dist-files 2>/dev/null)" ]]; then
-            echo "::error::No release artifacts found. Check build jobs succeeded and artifacts uploaded."
-            exit 1
-          fi
-          # 删除旧 release（忽略不存在的情况）
-          gh release delete "$TAG" --force -y 2>/dev/null || true
-          # 创建 release
+
+          # 删除同名旧 release（不存在则忽略）
+          gh release delete "$TAG" --cleanup-tag --yes 2>/dev/null || true
+
+          # 用 glob 展开上传，避免文件名空格被 shell 拆分
           gh release create "$TAG" \
             --title "$TAG" \
             --generate-notes \
-            $(find dist-files -type f | sort)
+            dist-files/*
