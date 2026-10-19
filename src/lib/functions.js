@@ -142,6 +142,12 @@ export const FUNCTIONS = [
     name: '全局配置',
     icon: '⚙️',
     keywords: ['设置', '配置', '默认值', '偏好']
+  },
+  {
+    id: 'dex-toolkit',
+    name: 'Dex 工具集',
+    icon: '🧪',
+    keywords: ['dex', 'jar', 'smali', 'baksmali', 'cfr', 'dex2jar', 'jar2dex', '反编译', '回编译', 'android', 'dex']
   }
 ];
 
@@ -150,7 +156,7 @@ export const CATEGORIES = [
   {
     id: 'package',
     name: '安装与包体分析',
-    functions: ['install', 'info', 'decompile', 'code-search', 'sign']
+    functions: ['install', 'info', 'decompile', 'code-search', 'sign', 'dex-toolkit']
   },
   { id: 'text', name: '文本工具', functions: ['text', 'http', 'json', 'markdown', 'xmind'] },
   {

@@ -28,6 +28,7 @@ import PlatformMatrix from './components/PlatformMatrix';
 import CommandPalette from './components/common/CommandPalette';
 import ErrorBoundary from './components/common/ErrorBoundary';
 import ToastHost from './components/common/ToastHost';
+import DexToolkit from './components/DexToolkit';
 import {
   CATEGORIES,
   FILL_FUNCTIONS,
@@ -205,6 +206,8 @@ function App() {
         return <DeviceInfo key={instanceKey} />;
       case 'settings':
         return <Settings key={instanceKey} config={config} onSave={saveConfig} />;
+      case 'dex-toolkit':
+        return <DexToolkit key={instanceKey} />;
       default:
         return null;
     }

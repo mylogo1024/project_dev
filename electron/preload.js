@@ -130,6 +130,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('tool-installer:progress', handler);
     return () => ipcRenderer.removeListener('tool-installer:progress', handler);
   },
+  // ==================== Dex 工具集 ====================
+  dexToolkitStatus: () => ipcRenderer.invoke('dex-toolkit:status'),
+  dexToolkitDownload: (payload) => ipcRenderer.invoke('dex-toolkit:download', payload),
+  dexToolkitRun: (payload) => ipcRenderer.invoke('dex-toolkit:run', payload),
+  dexToolkitReveal: (targetPath) => ipcRenderer.invoke('dex-toolkit:reveal', targetPath),
+  onDexToolkitProgress: (callback) => {
+    const handler = (event, payload) => callback(payload);
+    ipcRenderer.on('dex-toolkit:progress', handler);
+    return () => ipcRenderer.removeListener('dex-toolkit:progress', handler);
+  },
 
   // ==================== 环境检测 ====================
   checkEnvironment: () => ipcRenderer.invoke('check-environment'),

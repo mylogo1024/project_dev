@@ -1,7 +1,8 @@
-const { app, BrowserWindow, ipcMain, dialog, screen, systemPreferences } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, screen, systemPreferences, shell } = require('electron');
 const path = require('path');
 const { exec, execFile, execFileSync, spawn } = require('child_process');
 const fs = require('fs');
+const fsp = fs.promises;
 const os = require('os');
 const util = require('util');
 const crypto = require('crypto');
@@ -35,6 +36,11 @@ const { openZip } = require('./pkginfo/zip');
 const { extractMachoSymbols } = require('./pkginfo/macho-symbols');
 const { createBatchScanner, toCsv, toMarkdown, BATCH_COLUMNS } = require('./pkginfo/batch');
 const { createPlatformCapabilities } = require('./platform-capabilities');
+const {
+  runDexAction,
+  findJarTool,
+  resolveDexTools
+} = require('./dex-toolkit');
 const {
   planInstallBatch,
   runInstallBatch,
@@ -1856,6 +1862,149 @@ ipcMain.handle('export-batch-scan-result', async (event, payload = {}) => {
   }
 });
 
+// ==================== Dex 工具集 ====================
+
+const DEX_JAR_TOOL_IDS = ['baksmali', 'smali', 'cfr'];
+
+function getDexJarTools() {
+  return DEX_JAR_TOOL_IDS
+    .map((id) => toolInstaller.TOOL_DEFS.find((tool) => tool.id === id))
+    .filter(Boolean)
+    .map((tool) => ({
+      id: tool.id,
+      name: tool.name,
+      jar: tool.jarName,
+      url: tool.url,
+      mirrors: tool.mirrors,
+      approxBytes: tool.approxBytes,
+      note: tool.providesNote
+    }));
+}
+
+async function detectToolSafe(tool, args) {
+  try {
+    const result = await detectTool(tool, args);
+    return result.installed;
+  } catch (_) {
+    return false;
+  }
+}
+
+function resolveDexToolDir(toolId) {
+  const tool = toolInstaller.TOOL_DEFS.find((item) => item.id === toolId);
+  if (!tool) return toolInstaller.toolRoot();
+  return toolInstaller.installDirFor(tool);
+}
+
+function sendDexProgress(event, jobId, info) {
+  try {
+    const sender = event?.sender;
+    if (!sender || sender.isDestroyed?.()) return;
+    sender.send('dex-toolkit:progress', { jobId, ...info });
+  } catch (_) { /* 进度推送失败不影响任务 */ }
+}
+
+/**
+ * 探测 jar 类工具（baksmali / smali / cfr）与 dex-tools 是否可用。
+ *
+ * 平台策略（用户确认）：Windows 走应用内一键安装；mac / Linux 优先用系统上已有的，
+ * 没有就在 UI 上给「在线下载」入口，不替用户静默改动系统目录。
+ */
+ipcMain.handle('dex-toolkit:status', async () => ({
+  platform: process.platform,
+  windowsAutoInstall: process.platform === 'win32',
+  tools: getDexJarTools().map((item) => {
+    const found = findJarTool(toolInstaller, item.jar);
+    return {
+      id: item.id,
+      name: item.name,
+      jar: item.jar,
+      installed: Boolean(found),
+      path: found,
+      url: item.url,
+      approxBytes: item.approxBytes,
+      note: item.note
+    };
+  }),
+  dexTools: Boolean(resolveDexTools(toolInstaller)),
+  d8: Boolean(await detectToolSafe('d8', ['--version'])),
+  javac: Boolean(await detectToolSafe('javac', ['-version'])),
+  toolDir: toolInstaller.toolRoot()
+}));
+
+/** 「在线下载」：把 jar 工具下载到应用工具目录，让用户自己决定要不要装。 */
+ipcMain.handle('dex-toolkit:download', async (event, payload = {}) => {
+  const item = getDexJarTools().find((entry) => entry.id === payload.toolId);
+  if (!item) return { ok: false, error: '未知工具' };
+  const jobId = `dex-dl-${item.id}`;
+  const dir = resolveDexToolDir(item.id);
+  const target = path.join(dir, item.jar);
+  try {
+    await fsp.mkdir(path.dirname(target), { recursive: true });
+    const urls = toolInstaller.urlCandidates(
+      toolInstaller.TOOL_DEFS.find((tool) => tool.id === item.id) || item
+    );
+    let lastError = null;
+    for (const url of urls) {
+      try {
+        // 下载到 .part 再落位，中断不会留下可用的半成品
+        await toolInstaller.downloadToFile(url, target, {
+          onProgress: ({ received, total, percent }) => {
+            sendDexProgress(event, jobId, { stage: '下载', percent: percent ?? null, detail: item.name });
+          }
+        });
+        lastError = null;
+        break;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    if (lastError) throw lastError;
+    refreshToolEnvironment();
+    return { ok: true, toolId: item.id, path: target };
+  } catch (error) {
+    return { ok: false, toolId: item.id, error: error.message };
+  }
+});
+
+ipcMain.handle('dex-toolkit:run', async (event, payload = {}) => {
+  const jobId = payload.jobId || `dex-${Date.now()}`;
+  const onProgress = (info) => sendDexProgress(event, jobId, info);
+  try {
+    const result = await runDexAction({
+      action: payload.action,
+      inputs: payload.inputs || [],
+      outputDir: payload.outputDir,
+      runTool,
+      runToolStream,
+      toolInstaller,
+      onProgress
+    });
+    return { ok: true, jobId, ...result };
+  } catch (error) {
+    return { ok: false, jobId, error: error.message };
+  }
+});
+
+ipcMain.handle('dex-toolkit:reveal', async (_event, targetPath) => {
+  if (!targetPath) return { ok: false };
+  try {
+    const stat = fs.existsSync(targetPath) ? fs.statSync(targetPath) : null;
+    if (stat && stat.isDirectory()) {
+      await shell.openPath(targetPath);
+    } else if (stat) {
+      shell.showItemInFolder(targetPath);
+    } else if (!path.extname(targetPath)) {
+      await shell.openPath(targetPath);
+    } else {
+      return { ok: false, error: '路径不存在' };
+    }
+    return { ok: true };
+  } catch (_) {
+    return { ok: false };
+  }
+});
+
 // ==================== 缺失工具自动安装（仅 Windows） ====================
 //
 // Windows 没有包管理器，用户看到「未找到工具 adb」往往不知道去哪下、下完放哪。
@@ -3014,8 +3163,13 @@ function parseLogLine(line, deviceType) {
 // 获取 Android 设备上运行的应用进程（PID→包名），用于日志包名筛选
 ipcMain.handle('get-android-apps', async (event, deviceId) => {
   try {
-    const { stdout } = await runTool('adb', ['-s', String(deviceId || '').trim(), 'shell', 'ps', '--noheadings'], { timeout: 10000, maxBuffer: 2 * 1024 * 1024 });
-    const lines = String(stdout).split(/\r?\n/);
+    const { stdout } = await runTool('adb', ['-s', String(deviceId || '').trim(), 'shell', 'ps'], { timeout: 10000, maxBuffer: 2 * 1024 * 1024 });
+    const raw = String(stdout);
+    let lines = raw.split(/\r?\n/);
+    // 兼容旧版/新版 ps：若首行是表头则跳过
+    if (lines.length > 0 && lines[0].includes('USER') && lines[0].includes('PID')) {
+      lines = lines.slice(1);
+    }
     const processes = [];
     for (const line of lines) {
       const parts = line.trim().split(/\s+/);

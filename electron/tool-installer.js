@@ -100,6 +100,82 @@ const TOOL_DEFS = [
     github: true,
     approxBytes: 19 * 1024 * 1024,
     providesNote: '装好后可用：APK 反编译 / 回编译（运行时仍需要 JRE）'
+  },
+
+  /**
+   * 下面这批是「Dex 工具集」用的 Java 工具。
+   *
+   * 与 apktool 的区别在于：它们全部是 jar，没有可执行位，runTool 找不到，
+   * 所以 kind 用 'jar'，marker 就是 jar 文件本身（dex-toolkit.js 里用
+   * `java -jar <找到的 jar>` 调起，见 resolveJavaJar）。
+   *
+   * 平台策略（见 README 的产品约定）：
+   *   - Windows：应用内一键安装（和 adb / scrcpy 一样）
+   *   - mac / Linux：优先用「系统上已有的工具」，没有的话用户点「在线下载」
+   *     手动拉到应用目录 —— 不静默改动系统目录。
+   */
+  {
+    id: 'baksmali',
+    name: 'baksmali（dex → smali 反编译）',
+    provides: ['baksmali'],
+    kind: 'jar',
+    jarName: 'baksmali.jar',
+    versionUrl: null,
+    version: '2.5.2',
+    // bitbucket 是 smali 官方发布点，直连即可；失败回退到 GitHub release
+    url: 'https://bitbucket.org/JesusFreke/smali/downloads/baksmali-2.5.2.jar',
+    mirrors: [
+      'https://github.com/JesusFreke/smali/releases/download/v2.5.2/baksmali-2.5.2.jar'
+    ],
+    github: false,
+    approxBytes: 2 * 1024 * 1024,
+    providesNote: 'Dex 工具集：反编译 dex（需要 JRE）'
+  },
+  {
+    id: 'smali',
+    name: 'smali（smali → dex 回编译）',
+    provides: ['smali'],
+    kind: 'jar',
+    jarName: 'smali.jar',
+    versionUrl: null,
+    version: '2.5.2',
+    url: 'https://bitbucket.org/JesusFreke/smali/downloads/smali-2.5.2.jar',
+    mirrors: [
+      'https://github.com/JesusFreke/smali/releases/download/v2.5.2/smali-2.5.2.jar'
+    ],
+    github: false,
+    approxBytes: 1 * 1024 * 1024,
+    providesNote: 'Dex 工具集：回编译 dex（需要 JRE）'
+  },
+  {
+    id: 'dex-tools',
+    name: 'dex-tools（dex → jar，含 .class）',
+    provides: ['d2j-dex2jar'],
+    kind: 'dex-tools',
+    jarName: 'd2j-dex2jar.jar',
+    versionUrl: 'https://api.github.com/repos/pxb1988/dex2jar/releases/latest',
+    version: '2.4',
+    urlTemplate: (version) =>
+      `https://github.com/pxb1988/dex2jar/releases/download/v${version}/dex-tools-v${version}.zip`,
+    github: true,
+    approxBytes: 19 * 1024 * 1024,
+    providesNote: 'Dex 工具集：dex2jar（未装时自动回退 d8，产出的是含 dex 的 jar）'
+  },
+  {
+    id: 'cfr',
+    name: 'CFR（jar / class → java 源码）',
+    provides: ['cfr'],
+    kind: 'jar',
+    jarName: 'cfr.jar',
+    versionUrl: null,
+    version: '0.152',
+    url: 'https://repo1.maven.org/maven2/org/benf/cfr/0.152/cfr-0.152.jar',
+    mirrors: [
+      'https://github.com/leibnitz27/cfr/releases/download/0.152/cfr-0.152.jar'
+    ],
+    github: false,
+    approxBytes: 3 * 1024 * 1024,
+    providesNote: 'Dex 工具集：反编译 jar（需要 JRE）'
   }
 ];
 
@@ -119,9 +195,15 @@ function installDirFor(tool) {
 /**
  * 对外暴露的工具目录列表，供 tool-env.js 加入搜索路径。
  * 已安装的才返回（未安装时目录不存在，加进 PATH 也没意义）。
+ * 例外：`DAILY_DEV_TOOLBOX_TOOLS_DIR` 是开发/自检目录，即使当前为空也加入，
+ * 方便用户放好工具后无需重装应用即可被 tool-env 看到。
  */
 function binDirectories() {
   const dirs = [];
+  if (process.env.DAILY_DEV_TOOLBOX_TOOLS_DIR) {
+    const customDir = path.resolve(process.env.DAILY_DEV_TOOLBOX_TOOLS_DIR);
+    if (fs.existsSync(customDir)) dirs.push(customDir);
+  }
   for (const tool of TOOL_DEFS) {
     const dir = installDirFor(tool);
     if (fs.existsSync(dir)) dirs.push(dir);
@@ -157,6 +239,12 @@ function listInstalled() {
  */
 function markerName(tool) {
   if (tool.kind === 'apktool') return 'apktool.bat';
+  // 纯 jar 工具：marker 就是 jar 本身（dex-toolkit.js 用 `java -jar` 调起）
+  if (tool.kind === 'jar') return tool.jarName;
+  // dex-tools 是 zip，解压后是 d2j-dex2jar.sh / .bat，另外还要产出 jar 供 fallback 用
+  if (tool.kind === 'dex-tools') {
+    return process.platform === 'win32' ? 'd2j-dex2jar.bat' : 'd2j-dex2jar.sh';
+  }
   return `${tool.provides[0]}.exe`;
 }
 
@@ -167,9 +255,16 @@ function markerName(tool) {
 function urlCandidates(tool) {
   const primary = tool.urlTemplate ? tool.urlTemplate(tool.version) : tool.url;
   const urls = [primary];
+  // mirrors: 任意 kind 都允许，用来支持 jar 类工具的多源（bitbucket / github / maven）
+  if (Array.isArray(tool.mirrors)) {
+    urls.push(...tool.mirrors);
+  }
   if (tool.github) {
     const custom = String(process.env.DAILY_DEV_TOOLBOX_GITHUB_MIRROR || '').trim();
-    if (custom) urls.push(custom.endsWith('/') ? custom + primary : custom + '/' + primary);
+    if (custom) {
+      const wrapped = custom.endsWith('/') ? custom + primary : custom + '/' + primary;
+      urls.push(wrapped);
+    }
     for (const mirror of DEFAULT_GITHUB_MIRRORS) {
       urls.push(mirror.endsWith('/') ? mirror + primary : mirror + '/' + primary);
     }
@@ -290,7 +385,19 @@ function downloadToFile(url, target, options = {}) {
   });
 }
 
-/** Windows 上把 jar 包成可执行入口 —— runTool 只找 adb.exe 这类名字，找不到 jar。 */
+/** 递归补齐安装目录内 .sh / .bat 的可执行位（zip 解压通常保留 755，但保险起见都 chmod 一遍）。 */
+async function ensureExecutable(dir) {
+  const entries = await fsp.readdir(dir, { withFileTypes: true });
+  for (const entry of entries) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      await ensureExecutable(full);
+    } else if (entry.isFile() && (entry.name.endsWith('.sh') || entry.name.endsWith('.bat') || entry.name === 'apktool')) {
+      try { await fsp.chmod(full, 0o755); } catch (_) { /* Windows 没有可执行位 */ }
+    }
+  }
+}
+
 function writeApktoolLauncher(dir, jarName) {
   const bat = path.join(dir, 'apktool.bat');
   const script = [
@@ -362,6 +469,26 @@ async function installTool(toolId, options = {}) {
         const jarPath = path.join(dir, 'apktool.jar');
         await fsp.copyFile(archive, jarPath);
         writeApktoolLauncher(dir, 'apktool.jar');
+      } else if (tool.kind === 'jar') {
+        emit('安装', 75, '落入目录');
+        const jarPath = path.join(dir, tool.jarName);
+        await fsp.copyFile(archive, jarPath);
+      } else if (tool.kind === 'dex-tools') {
+        emit('安装', 75, '落入目录');
+        const zip = openZip(archive);
+        try {
+          zip.extractTo(dir, {
+            signal,
+            filter: (entry) => !entry.name.endsWith('/'),
+            onProgress: ({ percent, done, total }) => {
+              emit('安装', 75 + Math.round((percent / 100) * 18), `${done} / ${total} 个文件`);
+            }
+          });
+        } finally {
+          zip.close();
+        }
+        // 给 mac / Linux 加可执行位（zip 内通常已是 755，但保险起见都 chmod 一遍）
+        await ensureExecutable(dir);
       } else {
         emit('解压', 72, '解压缩中');
         const zip = openZip(archive);
