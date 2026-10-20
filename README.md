@@ -734,21 +734,21 @@ node tools/real-device-batch-install.js --serial <UDID>
 
 ### 设备自动化工作台
 
-![设备自动化工作台](screenshots/%E6%88%AA%E5%B1%8F2026-10-20%2016.33.35.png)
+![设备自动化工作台](screenshots/01-device-workbench.png)
 
 扫描出已连接的 iOS / Android 设备后，可直接进入投屏控制、实时日志、文件管理、应用管理与设备信息。
 
 ### 命令面板（⌘K / Ctrl+K）
 
-![命令面板 · 搜索功能](screenshots/%E6%88%AA%E5%B1%8F2026-10-20%2016.34.22.png)
+![命令面板 · 搜索功能](screenshots/02-command-palette-search.png)
 
-![命令面板 · 功能列表](screenshots/%E6%88%AA%E5%B1%8F2026-10-20%2016.34.49.png)
+![命令面板 · 功能列表](screenshots/03-command-palette-list.png)
 
 输入关键字即时筛选，共 23 个功能；上下键选择，Enter 打开，Esc 关闭。
 
 ### 本机信息
 
-![本机信息](screenshots/%E6%88%AA%E5%B1%8F2026-10-20%2016.34.55.png)
+![本机信息](screenshots/04-system-info.png)
 
 系统、CPU、内存、网络与运行环境信息，支持一键刷新与导出报告。
 
