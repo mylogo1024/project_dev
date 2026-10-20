@@ -68,10 +68,11 @@ function App() {
   const [favoriteIds, setFavoriteIds] = useState(() => readStoredList(FAVORITE_KEY));
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [sidebarQuery, setSidebarQuery] = useState('');
+  // 默认全空：签名相关的别名 / 密码只记录用户自己填的，不内置演示值
   const [config, setConfig] = useState({
     keystorePath: '',
-    alias: 'csgame',
-    password: '123'
+    alias: '',
+    password: ''
   });
 
   useEffect(() => { writeStoredList(FAVORITE_KEY, favoriteIds); }, [favoriteIds]);
@@ -102,8 +103,8 @@ function App() {
       if (savedConfig) {
         setConfig({
           keystorePath: savedConfig.keystorePath || '',
-          alias: savedConfig.alias ?? 'csgame',
-          password: savedConfig.password ?? '123'
+          alias: savedConfig.alias ?? '',
+          password: savedConfig.password ?? ''
         });
       }
     } catch (error) {
@@ -115,8 +116,8 @@ function App() {
     await window.electronAPI.saveConfig(newConfig);
     setConfig({
       keystorePath: newConfig.keystorePath || '',
-      alias: newConfig.alias ?? 'csgame',
-      password: newConfig.password ?? '123'
+      alias: newConfig.alias ?? '',
+      password: newConfig.password ?? ''
     });
   };
 

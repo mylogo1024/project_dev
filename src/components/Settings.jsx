@@ -4,15 +4,15 @@ import { cleanIpcError } from '../lib/errorText';
 
 function Settings({ config, onSave }) {
   const [keystorePath, setKeystorePath] = useState(config.keystorePath || '');
-  const [alias, setAlias] = useState(config.alias ?? 'csgame');
-  const [password, setPassword] = useState(config.password ?? '123');
+  const [alias, setAlias] = useState(config.alias ?? '');
+  const [password, setPassword] = useState(config.password ?? '');
   const [message, setMessage] = useState(null);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     setKeystorePath(config.keystorePath || '');
-    setAlias(config.alias ?? 'csgame');
-    setPassword(config.password ?? '123');
+    setAlias(config.alias ?? '');
+    setPassword(config.password ?? '');
   }, [config.keystorePath, config.alias, config.password]);
 
   const selectKeystore = async () => {
@@ -27,7 +27,7 @@ function Settings({ config, onSave }) {
     try {
       await onSave({
         keystorePath,
-        alias: alias.trim() || 'csgame',
+        alias: alias.trim(),
         password
       });
       setMessage({ type: 'success', text: '配置保存成功' });
@@ -61,7 +61,7 @@ function Settings({ config, onSave }) {
           type="text"
           value={alias}
           onChange={(e) => setAlias(e.target.value)}
-          placeholder="csgame"
+          placeholder="请输入签名别名"
         />
       </div>
 

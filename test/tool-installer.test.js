@@ -20,13 +20,14 @@ test('toolRoot 落在环境变量指向的目录内', () => {
   assert.equal(installer.toolRoot(), path.resolve(SANDBOX));
 });
 
-test('未安装时 binDirectories 为空', () => {
-  assert.deepEqual(installer.binDirectories(), []);
+test('未安装时 binDirectories 只包含自定义工具目录', () => {
+  // DAILY_DEV_TOOLBOX_TOOLS_DIR 是开发/自检目录，存在即加入搜索路径
+  assert.deepEqual(installer.binDirectories(), [path.resolve(SANDBOX)]);
 });
 
-test('listInstalled 覆盖 adb / scrcpy / apktool 三件套', () => {
+test('listInstalled 覆盖全部可安装工具', () => {
   const ids = installer.listInstalled().map((item) => item.id);
-  assert.deepEqual(ids, ['adb', 'scrcpy', 'apktool']);
+  assert.deepEqual(ids, ['adb', 'scrcpy', 'apktool', 'baksmali', 'smali', 'dex-tools', 'cfr']);
   assert.ok(installer.listInstalled().every((item) => item.installed === false));
 });
 

@@ -2567,18 +2567,20 @@ ipcMain.handle('inspect-ipa-signature', async (event, payload = {}) => {
 });
 
 function loadAppConfig() {
-  const fallback = { keystorePath: '', alias: 'csgame', password: '123' };
+  // 只记录用户自己配置的内容：没有配置文件或字段缺失时一律留空，
+  // 不再内置 csgame / 123 这类演示值。
+  const empty = { keystorePath: '', alias: '', password: '' };
   try {
     const configPath = path.join(app.getPath('userData'), 'config.json');
-    if (!fs.existsSync(configPath)) return fallback;
+    if (!fs.existsSync(configPath)) return empty;
     const data = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
     return {
       keystorePath: typeof data.keystorePath === 'string' ? data.keystorePath : '',
-      alias: typeof data.alias === 'string' && data.alias ? data.alias : fallback.alias,
-      password: typeof data.password === 'string' && data.password ? data.password : fallback.password
+      alias: typeof data.alias === 'string' ? data.alias : '',
+      password: typeof data.password === 'string' ? data.password : ''
     };
   } catch (_) {
-    return fallback;
+    return empty;
   }
 }
 
@@ -2587,8 +2589,8 @@ ipcMain.handle('save-config', async (event, config) => {
   try {
     const payload = {
       keystorePath: typeof config?.keystorePath === 'string' ? config.keystorePath : '',
-      alias: typeof config?.alias === 'string' ? config.alias : 'csgame',
-      password: typeof config?.password === 'string' ? config.password : '123'
+      alias: typeof config?.alias === 'string' ? config.alias : '',
+      password: typeof config?.password === 'string' ? config.password : ''
     };
     const configPath = path.join(app.getPath('userData'), 'config.json');
     const tempPath = `${configPath}.${process.pid}.tmp`;

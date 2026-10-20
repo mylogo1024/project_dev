@@ -260,7 +260,7 @@ function DecompileApk({ config = {} }) {
               <label>签名（全局配置，默认 v1 + v2）</label>
               <div className="secret-preview">
                 {config.keystorePath
-                  ? `${config.keystorePath} · 别名 ${config.alias || 'csgame'} · 先 zipalign 再签`
+                  ? `${config.keystorePath} · 别名 ${config.alias || '（未配置）'} · 先 zipalign 再签`
                   : '还没有配置签名文件，请先到「设置」里选 keystore'}
               </div>
               <small className="decompile-hint">

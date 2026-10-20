@@ -74,8 +74,8 @@ async function rebuildAndroid({ runTool, projectDir, outputPath, onProgress, sig
       apkPath: unsignedPath,
       outputPath,
       keystorePath: sign.keystorePath,
-      alias: sign.alias || 'csgame',
-      password: sign.password || '123',
+      alias: sign.alias || '',
+      password: sign.password || '',
       v1: sign.v1 !== false,
       v2: sign.v2 !== false,
       v3: sign.v3 === true

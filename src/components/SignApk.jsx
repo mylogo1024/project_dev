@@ -22,8 +22,8 @@ function SignApk({ config }) {
   const [platform, setPlatform] = useState('android');
   const [apkPath, setApkPath] = useState('');
   const [keystorePath, setKeystorePath] = useState(config.keystorePath || '');
-  const [alias, setAlias] = useState(config.alias || 'csgame');
-  const [password, setPassword] = useState(config.password || '123');
+  const [alias, setAlias] = useState(config.alias || '');
+  const [password, setPassword] = useState(config.password || '');
   const [ipaPath, setIpaPath] = useState('');
   const [provisionPath, setProvisionPath] = useState('');
   const [provisionInfo, setProvisionInfo] = useState(null);
@@ -45,8 +45,8 @@ function SignApk({ config }) {
 
   useEffect(() => {
     setKeystorePath(config.keystorePath || '');
-    setAlias(config.alias || 'csgame');
-    setPassword(config.password || '123');
+    setAlias(config.alias || '');
+    setPassword(config.password || '');
   }, [config]);
 
   // 订阅重签名进度。重签名要解压几百 MB、签上百个目标、再重新打包 ——
@@ -287,7 +287,7 @@ function SignApk({ config }) {
               type="text"
               value={alias}
               onChange={(e) => setAlias(e.target.value)}
-              placeholder="csgame"
+              placeholder="请输入签名别名"
             />
           </div>
 
@@ -296,7 +296,7 @@ function SignApk({ config }) {
             label="密码（始终明文显示）"
             value={password}
             onChange={setPassword}
-            placeholder="123"
+            placeholder="请输入签名密码"
           />
 
           <div className="form-group">
