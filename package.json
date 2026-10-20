@@ -57,6 +57,7 @@
     "asar": true,
     "compression": "normal",
     "publish": null,
+    "afterPack": "scripts/after-pack.js",
     "electronLanguages": [
       "zh-CN",
       "en-US"
