@@ -133,8 +133,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // ==================== Dex 工具集 ====================
   dexToolkitStatus: () => ipcRenderer.invoke('dex-toolkit:status'),
   dexToolkitDownload: (payload) => ipcRenderer.invoke('dex-toolkit:download', payload),
+  dexToolkitSetToolDir: (payload) => ipcRenderer.invoke('dex-toolkit:set-tool-dir', payload),
   dexToolkitRun: (payload) => ipcRenderer.invoke('dex-toolkit:run', payload),
+  dexToolkitDefaultOutput: (payload) => ipcRenderer.invoke('dex-toolkit:default-output', payload),
   dexToolkitReveal: (targetPath) => ipcRenderer.invoke('dex-toolkit:reveal', targetPath),
+  // 启动命令：从 APK 读出包名 + 入口 Activity，生成可复制的 adb 命令
+  dexToolkitLaunchCommand: (payload) => ipcRenderer.invoke('dex-toolkit:launch-command', payload),
+  // 查壳：独立识别 APK 的加固方案与对抗特征
+  dexToolkitCheckPacker: (payload) => ipcRenderer.invoke('dex-toolkit:check-packer', payload),
   onDexToolkitProgress: (callback) => {
     const handler = (event, payload) => callback(payload);
     ipcRenderer.on('dex-toolkit:progress', handler);

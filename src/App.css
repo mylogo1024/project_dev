@@ -1669,6 +1669,447 @@ body {
   margin-bottom: 0;
 }
 
+/* ===== Dex 工具集 ===== */
+.dex-toolkit {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+/* 内容卡片此处同时是 flex 容器：子项一旦可压缩就会「缩到刚好放得下」，
+   不产生溢出，滚动条也就不会出现（表现为页面无法上下滚动）。 */
+.dex-toolkit > * {
+  flex-shrink: 0;
+}
+
+.dex-empty {
+  padding: 40px;
+  text-align: center;
+  color: #5f6368;
+  font-size: 14px;
+}
+
+/* 左主区（操作 + 执行）、右工具区 */
+.dex-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 340px;
+  gap: 18px;
+  align-items: start;
+}
+
+.dex-main {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  min-width: 0;
+}
+
+@media (max-width: 1080px) {
+  .dex-body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ---- 顶部标题 ---- */
+.dex-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid #e8eaed;
+}
+
+.dex-header__main h2 {
+  margin: 0 0 4px;
+  font-size: 20px;
+  color: #202124;
+}
+
+.dex-header__main p {
+  margin: 0;
+  font-size: 13px;
+  color: #5f6368;
+}
+
+.dex-header__side {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+/* ---- 状态徽标 ---- */
+.dex-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.dex-badge.is-success {
+  color: #1e8e3e;
+  background: #e6f4ea;
+}
+
+.dex-badge.is-warning {
+  color: #b06000;
+  background: #fef7e0;
+}
+
+.dex-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #5b53c5;
+  background: #edecfb;
+}
+
+/* ---- 面板卡片 ---- */
+.dex-panel {
+  padding: 16px 18px;
+  background: #fff;
+  border: 1px solid #e8eaed;
+  border-radius: 12px;
+}
+
+.dex-panel__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.dex-panel__head h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+  color: #202124;
+}
+
+.dex-panel__hint {
+  font-size: 12px;
+  color: #80868b;
+}
+
+/* ---- 工具行 ---- */
+.dex-tools {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.dex-tool {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  background: #fdfdfe;
+  border: 1px solid #e8eaed;
+  border-left: 3px solid #f0c36d;
+  border-radius: 10px;
+}
+
+.dex-tool.is-installed {
+  border-left-color: #4caf50;
+}
+
+.dex-tool.is-missing {
+  background: #fffdf7;
+}
+
+.dex-tool__head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.dex-tool__name {
+  font-size: 13px;
+  font-weight: 600;
+  color: #202124;
+}
+
+.dex-tool__head .dex-badge {
+  margin-left: auto;
+}
+
+.dex-tool__note {
+  font-size: 12px;
+  color: #5f6368;
+}
+
+.dex-tool__path {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 5px 10px;
+  background: #f7f8fc;
+  border-radius: 6px;
+}
+
+.dex-tool__path-label {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 600;
+  color: #80868b;
+}
+
+.dex-tool__path code {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: #3c4043;
+}
+
+.dex-tool__btns {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* ---- 操作按钮组 ---- */
+.dex-ops {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 10px;
+}
+
+.dex-op {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 10px 14px;
+  text-align: left;
+  background: #f7f8fc;
+  border: 1.5px solid #e8eaed;
+  border-radius: 10px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: all 0.15s;
+}
+
+.dex-op:hover:not(:disabled) {
+  border-color: #c3bdf0;
+  background: #f3f2fd;
+}
+
+.dex-op.is-active {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  border-color: transparent;
+  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
+}
+
+.dex-op:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.dex-op__label {
+  font-size: 13px;
+  font-weight: 600;
+  color: #3c4043;
+}
+
+.dex-op__hint {
+  font-size: 11px;
+  color: #80868b;
+}
+
+.dex-op.is-active .dex-op__label,
+.dex-op.is-active .dex-op__hint {
+  color: #fff;
+}
+
+/* ---- 执行区 ---- */
+.dex-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 12px;
+}
+
+.dex-field {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.dex-field__label {
+  flex-shrink: 0;
+  width: 64px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #5f6368;
+}
+
+.dex-field__control {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex: 1;
+}
+
+.dex-field__meta {
+  font-size: 12px;
+  color: #5f6368;
+  flex-shrink: 0;
+}
+
+.dex-field__meta--path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dex-inputs {
+  margin: 12px 0 0;
+  padding: 8px 12px;
+  list-style: none;
+  max-height: 132px;
+  overflow-y: auto;
+  background: #f7f8fc;
+  border-radius: 8px;
+}
+
+.dex-inputs li {
+  font-size: 12px;
+  color: #3c4043;
+  padding: 3px 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dex-inputs__more {
+  color: #80868b;
+}
+
+.dex-run {
+  display: flex;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+/* ---- 查壳 / 启动命令报告 ---- */
+.dex-report {
+  margin-top: 16px;
+  padding: 14px 16px;
+  background: #f8f9fb;
+  border: 1px solid #e8eaed;
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.dex-report__row {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  font-size: 13px;
+  color: #3c4043;
+  line-height: 1.5;
+}
+
+.dex-report__label {
+  flex-shrink: 0;
+  width: 76px;
+  color: #5f6368;
+  font-weight: 600;
+}
+
+.dex-report__row code {
+  word-break: break-all;
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
+  font-size: 12px;
+  color: #202124;
+}
+
+.dex-evidence {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  word-break: break-all;
+}
+
+.dex-tags {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.dex-cmd {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  background: #fff;
+  border: 1px solid #e0e2e6;
+  border-radius: 8px;
+}
+
+.dex-cmd code {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
+  font-size: 12px;
+  color: #202124;
+}
+
+.dex-cmd .btn {
+  flex-shrink: 0;
+}
+
+.dex-badge.is-danger {
+  color: #c5221f;
+  background: #fce8e6;
+}
+
+/* ---- 按钮微调 ---- */
+.dex-toolkit .btn-sm {
+  padding: 7px 14px;
+  font-size: 12px;
+  border-radius: 8px;
+}
+
+.dex-toolkit .btn-outline {
+  background: #fff;
+  color: #5f6368;
+  border: 1px solid #dadce0;
+  box-shadow: none;
+}
+
+.dex-toolkit .btn-outline:hover:not(:disabled) {
+  background: #f1f3f4;
+  transform: none;
+}
+
+.dex-toolkit .btn-outline:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .env-guide {
   margin-top: 14px;
   padding: 12px 14px;

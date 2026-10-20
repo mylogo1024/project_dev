@@ -887,44 +887,21 @@ function parseAndroidPackage(filePath, options = {}) {
       warnings.push(`签名解析失败: ${error.message}`);
     }
 
-    // ---------- DEX ----------
+    // ---------- DEX / 原生库 / 代码扫描 / SDK / 加固 ----------
     report(56, '解析 DEX 字节码');
-    const dexEntries = zip.entries.filter((entry) => !entry.isDirectory && layout.dexPattern.test(entry.name))
-      .sort((a, b) => a.name.localeCompare(b.name, 'en', { numeric: true }));
-    const dexBuffers = [];
-    const stringChunks = [];
-    let dexIndex = 0;
-    for (const entry of dexEntries) {
-      dexIndex += 1;
-      report(56 + Math.round((dexIndex / Math.max(dexEntries.length, 1)) * 10), `解析 DEX 字节码（${dexIndex}/${dexEntries.length}）`, entry.name);
-      try {
-        const buffer = zip.readEntry(entry);
-        dexBuffers.push({ name: entry.name, buffer });
-        if (stringChunks.join('\n').length < MAX_STRING_TEXT) {
-          stringChunks.push(readDexStrings(buffer, 200000).join('\n'));
-        }
-      } catch (error) {
-        warnings.push(`读取 ${entry.name} 失败: ${error.message}`);
+    const { sources, dexInfo, native, codeText } = collectPackerScanSources(zip, layout, {
+      onProgress: (index, total, name) => {
+        report(56 + Math.round((index / Math.max(total, 1)) * 10), `解析 DEX 字节码（${index}/${total}）`, name);
+      },
+      onWarning: (message) => {
+        warnings.push(message);
       }
-    }
-    const dexInfo = dexBuffers.length ? analyzeDexFiles(dexBuffers) : null;
-
-    // ---------- 原生库 ----------
-    report(70, '解析原生库（.so）');
-    const native = buildNative(zip, layout);
-
-    // ---------- 代码扫描 ----------
+    });
     report(78, '扫描代码特征（URL / 密钥 / 域名）');
-    const codeText = stringChunks.join('\n').slice(0, MAX_STRING_TEXT);
     const network = scanCodeStrings(codeText);
 
     // ---------- SDK / 加固 ----------
     report(85, '识别第三方 SDK 与加固方案');
-    const sources = [
-      { type: 'text', value: zip.entries.map((entry) => entry.name).join('\n'), label: '包内路径' },
-      { type: 'text', value: codeText, label: 'DEX 字符串' },
-      { type: 'text', value: native.so_files.map((item) => item.name).join('\n'), label: '原生库' }
-    ];
     const sdks = detectSdks(sources);
     const packer = detectPacker(sources, dexInfo);
     const hardening = detectHardening(sources);
@@ -1406,6 +1383,152 @@ function parseAabBundleConfig(zip) {
   }
 }
 
+// ==================== 独立入口：启动命令 / 查壳 ====================
+
+/**
+ * 找启动入口（MAIN + LAUNCHER）的组件。
+ * activity 与 activity-alias 都可能是入口，alias 还要带上 targetActivity。
+ */
+function findLauncherComponents(components) {
+  const out = [];
+  if (!components) return out;
+  const isLauncher = (filter) => filter.actions.includes('android.intent.action.MAIN')
+    && filter.categories.includes('android.intent.category.LAUNCHER');
+
+  for (const activity of components.activities || []) {
+    if ((activity.intentFilters || []).some(isLauncher)) {
+      out.push({ name: activity.name, type: 'activity', targetActivity: null, exported: activity.exported });
+    }
+  }
+  for (const alias of components.activityAliases || []) {
+    if ((alias.intentFilters || []).some(isLauncher)) {
+      out.push({
+        name: alias.name,
+        type: 'activity-alias',
+        targetActivity: alias.targetActivity || null,
+        exported: alias.exported
+      });
+    }
+  }
+  return out;
+}
+
+/**
+ * 生成 Android 启动命令：从 APK / AAB 的 AndroidManifest.xml 读出包名与入口 Activity。
+ *
+ * 只解析 Manifest（不跑 DEX / 签名 / 体积等重活），所以打开很快。
+ * 入口缺失时退化到只用包名，仍给出可复制的命令。
+ */
+function buildLaunchCommand(filePath) {
+  const zip = openZip(filePath);
+  try {
+    const kind = detectContainerKind(zip) || 'apk';
+    if (kind === 'ipa') throw new Error('启动命令仅支持 Android 包体（APK / AAB）');
+    const layout = CONTAINER_LAYOUTS[kind] || CONTAINER_LAYOUTS.apk;
+    const { root } = parseManifestNode(zip, layout);
+    const identity = buildAppIdentity(root);
+    const packageName = identity.packageName || '';
+    if (!packageName) throw new Error('未能从 AndroidManifest.xml 中解析出包名');
+
+    const entries = findLauncherComponents(buildComponents(root));
+    const primary = entries[0] || null;
+    const componentName = primary ? `${packageName}/${primary.name}` : packageName;
+
+    return {
+      kind,
+      packageName,
+      activity: primary ? primary.name : null,
+      componentName,
+      entries,
+      debugCommand: `adb shell am start -D -n ${componentName}`,
+      normalCommand: `adb shell am start -n ${componentName}`,
+      stopCommand: `adb shell am force-stop ${packageName}`
+    };
+  } finally {
+    zip.close();
+  }
+}
+
+/**
+ * 加固扫描的统一数据源构造：按 layout.dexPattern 提取 dex（带排序 / 跳过不可读 /
+ * 累计字符串不超过 MAX_STRING_TEXT），并拼好「包内路径 / DEX 字符串 / 原生库」三件套，
+ * 供 detectPacker / detectHardening / detectSdks 等规则库共用。
+ *
+ * parseAndroidPackage 与 inspectPacker 走同一份逻辑，避免两边 DEX 读取 / sources 构造漂移。
+ * 进度 / 警告通过 hooks 回调交回调用方（保持函数纯）。
+ *
+ * 返回 { sources, dexInfo, native, codeText }
+ */
+function collectPackerScanSources(zip, layout, hooks = {}) {
+  const onProgress = hooks.onProgress || (() => {});
+  const onWarning = hooks.onWarning || (() => {});
+  const dexEntries = zip.entries.filter((entry) => !entry.isDirectory && layout.dexPattern.test(entry.name))
+    .sort((a, b) => a.name.localeCompare(b.name, 'en', { numeric: true }));
+  const dexBuffers = [];
+  const stringChunks = [];
+  let dexIndex = 0;
+  for (const entry of dexEntries) {
+    dexIndex += 1;
+    onProgress(dexIndex, dexEntries.length, entry.name);
+    try {
+      const buffer = zip.readEntry(entry);
+      dexBuffers.push({ name: entry.name, buffer });
+      if (stringChunks.join('\n').length < MAX_STRING_TEXT) {
+        stringChunks.push(readDexStrings(buffer, 200000).join('\n'));
+      }
+    } catch (error) {
+      onWarning(`读取 ${entry.name} 失败: ${error.message}`);
+    }
+  }
+  const dexInfo = dexBuffers.length ? analyzeDexFiles(dexBuffers) : null;
+  const native = buildNative(zip, layout);
+  const codeText = stringChunks.join('\n').slice(0, MAX_STRING_TEXT);
+  const sources = [
+    { type: 'text', value: zip.entries.map((entry) => entry.name).join('\n'), label: '包内路径' },
+    { type: 'text', value: codeText, label: 'DEX 字符串' },
+    { type: 'text', value: native.so_files.map((item) => item.name).join('\n'), label: '原生库' }
+  ];
+  return { sources, dexInfo, native, codeText };
+}
+
+/**
+ * 独立查壳：识别 APK / AAB 的加固方案与对抗特征（反调试 / 反 VM / 反 Root / 字符串加密 / 完整性校验）。
+ *
+ * 复用与「读取应用信息」完全一致的签名库（PACKER_SIGNATURES / HARDENING_MARKERS），
+ * 但只做加固相关扫描，不解析签名 / 体积 / 隐私等无关项，作为独立入口更快。
+ */
+function inspectPacker(filePath) {
+  const zip = openZip(filePath);
+  try {
+    const kind = detectContainerKind(zip) || 'apk';
+    if (kind === 'ipa') throw new Error('查壳仅支持 Android 包体（APK / AAB）');
+    const layout = CONTAINER_LAYOUTS[kind] || CONTAINER_LAYOUTS.apk;
+
+    const { sources, dexInfo, native } = collectPackerScanSources(zip, layout);
+    const packer = detectPacker(sources, dexInfo);
+    const hardening = detectHardening(sources);
+
+    return {
+      kind,
+      packed: packer.is_packed,
+      suspected: packer.suspected,
+      packer_name: packer.packer_name,
+      packer_vendor: packer.packer_vendor,
+      packer_evidence: packer.packer_evidence,
+      matches: packer.matches,
+      obfuscated: packer.is_obfuscated,
+      obfuscation_level: packer.obfuscation_level,
+      short_class_ratio: packer.short_class_ratio,
+      hardening,
+      hardening_enabled: Object.values(hardening).some(Boolean),
+      dex_count: dexInfo ? dexInfo.dex_count : 0,
+      native_libs: native.so_files.map((item) => item.name)
+    };
+  } finally {
+    zip.close();
+  }
+}
+
 module.exports = {
   parseAndroidPackage,
   parseAabBundleConfig,
@@ -1416,5 +1539,7 @@ module.exports = {
   buildPermissions,
   scanCodeStrings,
   sdkToAndroidVersion,
-  ANDROID_VERSIONS
+  ANDROID_VERSIONS,
+  buildLaunchCommand,
+  inspectPacker
 };

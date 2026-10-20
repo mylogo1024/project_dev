@@ -159,7 +159,7 @@ const TOOL_DEFS = [
       `https://github.com/pxb1988/dex2jar/releases/download/v${version}/dex-tools-v${version}.zip`,
     github: true,
     approxBytes: 19 * 1024 * 1024,
-    providesNote: 'Dex 工具集：dex2jar（未装时自动回退 d8，产出的是含 dex 的 jar）'
+    providesNote: 'Dex 工具集：dex2jar（dex → jar，还原真正的 .class）'
   },
   {
     id: 'cfr',
@@ -241,7 +241,7 @@ function markerName(tool) {
   if (tool.kind === 'apktool') return 'apktool.bat';
   // 纯 jar 工具：marker 就是 jar 本身（dex-toolkit.js 用 `java -jar` 调起）
   if (tool.kind === 'jar') return tool.jarName;
-  // dex-tools 是 zip，解压后是 d2j-dex2jar.sh / .bat，另外还要产出 jar 供 fallback 用
+  // dex-tools 是 zip，解压后是 d2j-dex2jar.sh / .bat（dex-toolkit.js 直接调这个脚本）
   if (tool.kind === 'dex-tools') {
     return process.platform === 'win32' ? 'd2j-dex2jar.bat' : 'd2j-dex2jar.sh';
   }
@@ -487,6 +487,8 @@ async function installTool(toolId, options = {}) {
         } finally {
           zip.close();
         }
+        // 官方 zip 常带一层 dex-tools-<version>/ 外壳，摊平后才能命中 d2j-dex2jar 脚本
+        await flattenIfNeeded(dir, tool);
         // 给 mac / Linux 加可执行位（zip 内通常已是 755，但保险起见都 chmod 一遍）
         await ensureExecutable(dir);
       } else {
@@ -526,9 +528,10 @@ async function installTool(toolId, options = {}) {
 /**
  * 官方 zip 常带一层 platform-tools/ 或 scrcpy-win64-xxx/ 外壳，
  * runTool 只在给定目录里找 adb.exe，多套一层就找不到，这里摊平。
+ * dex-tools 同理：zip 里多套一层 dex-tools-<version>/，摊平后才能命中 d2j-dex2jar 脚本。
  */
 async function flattenIfNeeded(dir, tool) {
-  if (tool.id === 'scrcpy' || tool.id === 'adb') {
+  if (tool.id === 'scrcpy' || tool.id === 'adb' || tool.kind === 'dex-tools') {
     const entries = await fsp.readdir(dir, { withFileTypes: true });
     const marker = markerName(tool);
     if (entries.some((entry) => entry.name === marker)) return;

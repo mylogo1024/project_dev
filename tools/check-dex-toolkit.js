@@ -24,6 +24,7 @@ const {
   collectJavaSources,
   collectSmaliDirs,
   findJarTool,
+  resolveDefaultOutputDir,
   bucketByRoot
 } = require('../electron/dex-toolkit');
 
@@ -76,6 +77,16 @@ async function main() {
 
   const buckets = bucketByRoot(javaSources);
   record('bucketByRoot 按根目录分桶', buckets.size >= 1, `${buckets.size} 桶`);
+
+  // 输出目录默认与输入同目录：目录取自身，文件取所在文件夹
+  const defFromDir = await resolveDefaultOutputDir([srcDir]);
+  record('resolveDefaultOutputDir 目录取自身', defFromDir === path.resolve(srcDir), defFromDir);
+  const defFromFile = await resolveDefaultOutputDir([javaFile]);
+  record(
+    'resolveDefaultOutputDir 文件取所在目录',
+    defFromFile === path.dirname(path.resolve(javaFile)),
+    defFromFile
+  );
 
   // ---- 2. 准备 jar（javac + jar，直接走系统命令，不走待测代码） ----
   if (!hasJavac) {
@@ -140,9 +151,9 @@ async function main() {
         record('baksmali/smali 用例', false, '未找到 jar，跳过（放到工具目录后可覆盖）');
       }
 
-      // ---- 5. dex2jar（需要 dex-tools 或 d8 之一） ----
+      // ---- 5. dex2jar（需要 dex-tools） ----
       const hasDexTools = !!(require('../electron/dex-toolkit').resolveDexTools(toolInstaller));
-      if (hasDexTools || hasD8) {
+      if (hasDexTools) {
         const jarOut = path.join(work, 'fromdex');
         const jRes = await runDexAction({
           action: 'dex2jar',
@@ -152,9 +163,9 @@ async function main() {
           runToolStream: runner.runToolStream,
           toolInstaller
         });
-        record('dex2jar 产出 .jar', fs.existsSync(jRes.results[0].output), jRes.fallback ? '（d8 回退模式）' : '（dex-tools）');
+        record('dex2jar 产出 .jar', fs.existsSync(jRes.results[0].output), '（dex-tools）');
       } else {
-        record('dex2jar 用例', false, '未找到 dex-tools 或 d8，跳过');
+        record('dex2jar 用例', false, '未找到 dex-tools，跳过');
       }
     } else {
       record('d8 用例', false, '未找到 d8，跳过');

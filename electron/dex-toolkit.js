@@ -1,14 +1,15 @@
 /**
  * Dex 工具集
  *
- * 六种转换，跑在 main 进程里，进度通过 onProgress 回调推给渲染层：
+ * 七种转换，跑在 main 进程里，进度通过 onProgress 回调推给渲染层：
  *
  *   jar2dex    .jar / .class / .zip  → .dex                  (d8)
- *   dex2jar    .dex / .apk           → .jar（含 .class）      (dex-tools，缺失回退 d8)
+ *   dex2jar    .dex / .apk           → .jar（含 .class）      (dex-tools)
  *   jar 反编译  .jar / .class        → .java 源码目录          (CFR)
  *   jar 回编译  .java（文件或目录）   → .jar（含 .class）      (javac + jar)
  *   dex 反编译  .dex / .apk          → .smali 目录            (baksmali)
  *   dex 回编译  .smali（文件或目录）  → .dex                   (smali)
+ *   odex 反编译 .odex / .vdex / .dex → 提取内嵌 dex → smali    (内置提取 + baksmali)
  *
  * 工具来源：
  *   - d8 / javac / jar：tool-env.js 的目录表（Android SDK / JDK / PATH…），走 runTool
@@ -48,6 +49,13 @@ function isJava(file) {
   return name.endsWith('.java');
 }
 
+// odex 反编译的输入：odex / vdex 容器，以及已经拆出来的裸 dex
+const ODEX_EXT = new Set(['.odex', '.vdex', '.dex']);
+
+function isOdexLike(file) {
+  return ODEX_EXT.has(path.extname(file).toLowerCase());
+}
+
 // ---------------- 输入归一化 ----------------
 
 async function walk(dir, predicate, out) {
@@ -74,6 +82,22 @@ async function collectConvertibles(rawInputs) {
       if (isDexLike(raw) || isJarLike(raw)) out.add(path.resolve(raw));
     } else if (stat.isDirectory()) {
       await walk(path.resolve(raw), (name) => isDexLike(name) || isJarLike(name), out);
+    }
+  }
+  return Array.from(out);
+}
+
+/** odex 反编译的输入：.odex / .vdex / .dex（目录会递归）。 */
+async function collectOdexInputs(rawInputs) {
+  const out = new Set();
+  for (const raw of rawInputs) {
+    if (!raw) continue;
+    const stat = await fsp.stat(raw).catch(() => null);
+    if (!stat) continue;
+    if (stat.isFile()) {
+      if (isOdexLike(raw)) out.add(path.resolve(raw));
+    } else if (stat.isDirectory()) {
+      await walk(path.resolve(raw), (name) => isOdexLike(name), out);
     }
   }
   return Array.from(out);
@@ -140,19 +164,54 @@ function stem(file) {
   return path.basename(file, path.extname(file));
 }
 
+/**
+ * 输出文件统一追加 _modify 后缀，避免直接覆盖输入：
+ *   a.jar → a_modify.dex / a_modify.jar
+ */
+function modifyFileName(input, ext) {
+  return `${stem(input)}_modify${ext}`;
+}
+
+/**
+ * 输出目录统一追加 _modify 后缀：a_src → a_src_modify。
+ */
+function modifyDirName(name) {
+  return `${name}_modify`;
+}
+
+/**
+ * 推导默认输出目录：输入是目录就取目录本身，是文件就取所在文件夹。
+ * 取第一个能识别到的输入（同一批输入通常同目录，结果一致）。
+ */
+async function resolveDefaultOutputDir(inputs = []) {
+  for (const raw of inputs) {
+    if (!raw) continue;
+    const stat = await fsp.stat(raw).catch(() => null);
+    if (!stat) continue;
+    return stat.isDirectory() ? path.resolve(raw) : path.dirname(path.resolve(raw));
+  }
+  return '';
+}
+
 // ---------------- 工具解析 ----------------
 
 /**
- * 找一个 jar 工具：先系统（which 等价的目录扫描），再应用安装目录。
+ * 找一个 jar 工具：先查用户在 UI 上「选择目录」指定的自定义路径，
+ * 再查环境变量目录与应用安装目录（toolInstaller.binDirectories()）。
  *
- * 实际通过 toolInstaller.binDirectories() 间接完成：
- * 该列表既包含 tool-env 注册的搜索目录，也包含 tool-installer 已安装工具目录，
- * 因此这里不必再维护一份独立的 extraDirs。
+ * extraDirs 由 main.js 从持久化配置读出后传入，让用户可以手动指定工具所在目录。
  */
-function findJarTool(toolInstaller, jarName) {
+function findJarTool(toolInstaller, jarName, extraDirs = []) {
   const candidates = [];
   if (process.env.DAILY_DEV_TOOLBOX_TOOLS_DIR) {
-    candidates.push(process.env.DAILY_DEV_TOOLBOX_TOOLS_DIR);
+    const customDir = path.resolve(process.env.DAILY_DEV_TOOLBOX_TOOLS_DIR);
+    if (fs.existsSync(customDir)) candidates.push(customDir);
+  }
+  // 用户在 UI 上「选择目录」指定的自定义路径，优先级高于应用安装目录
+  for (const dir of extraDirs) {
+    if (!dir) continue;
+    const resolved = path.resolve(dir);
+    if (fs.existsSync(resolved)) candidates.push(resolved);
   }
   if (toolInstaller?.binDirectories) {
     candidates.push(...toolInstaller.binDirectories());
@@ -164,8 +223,8 @@ function findJarTool(toolInstaller, jarName) {
   return null;
 }
 
-function requireJar(toolInstaller, jarName, friendlyName) {
-  const jar = findJarTool(toolInstaller, jarName);
+function requireJar(toolInstaller, jarName, friendlyName, extraDirs = []) {
+  const jar = findJarTool(toolInstaller, jarName, extraDirs);
   if (jar) return jar;
   throw new Error(
     `未找到 ${friendlyName}（${jarName}）。` +
@@ -191,7 +250,7 @@ async function jar2dex(ctx, inputs, outputDir, options) {
 
   for (let i = 0; i < inputs.length; i += 1) {
     const input = inputs[i];
-    const out = path.join(outputDir, `${stem(input)}.dex`);
+    const out = path.join(outputDir, modifyFileName(input, '.dex'));
     onProgress({
       percent: Math.round((i / inputs.length) * 90),
       stage: 'd8 编译',
@@ -215,42 +274,53 @@ async function jar2dex(ctx, inputs, outputDir, options) {
 }
 
 /**
- * dex2jar：优先 dex-tools（真 .class），缺失回退 d8。
+ * dex2jar：dex / apk → jar（含真正的 .class），由 dex-tools（d2j-dex2jar）完成。
  *
- * d8 回退的 jar 里装的是 classes.dex（javac 读不了），所以要把 fallback:true
- * 传出去让 UI 明确提示，别让用户以为拿到了可用的 class。
+ * 注意：d8 是「class → dex」编译器，喂 dex 只会得到一个「内含 classes.dex」的套壳 jar，
+ * 不是可用的 class，所以这里不再回退 d8 —— 缺 dex-tools 时直接报错，避免产出异常 jar。
  */
 async function dex2jar(ctx, inputs, outputDir, options) {
-  const { runTool, runToolStream, toolInstaller } = ctx;
+  const { runToolStream, toolInstaller, extraDirs } = ctx;
   const { onProgress = () => {} } = options;
   await fsp.mkdir(outputDir, { recursive: true });
   const results = [];
 
-  const dexTools = resolveDexTools(toolInstaller);
+  const dexTools = resolveDexTools(toolInstaller, extraDirs);
+  if (!dexTools) {
+    throw new Error(
+      '未找到 dex-tools（d2j-dex2jar）。dex → jar 需要它才能还原出真正的 .class。' +
+      (process.platform === 'win32'
+        ? '请在「工具安装」里一键安装。'
+        : '请在本页点「在线下载」，或手动放到工具目录。')
+    );
+  }
+
   for (let i = 0; i < inputs.length; i += 1) {
     const input = inputs[i];
-    const out = path.join(outputDir, `${stem(input)}.jar`);
+    const out = path.join(outputDir, modifyFileName(input, '.jar'));
     onProgress({
       percent: Math.round((i / inputs.length) * 90),
-      stage: dexTools ? 'dex2jar' : 'd8 回退',
+      stage: 'dex2jar',
       detail: path.basename(input)
     });
 
-    if (dexTools) {
-      await runStream(runToolStream, dexTools, [input, '-o', out], { onProgress, stage: 'dex2jar' });
-    } else {
-      await runTool('d8', ['--output', out, input], { timeout: 180000 });
-    }
+    await runStream(runToolStream, dexTools, [input, '-o', out], { onProgress, stage: 'dex2jar' });
     results.push({ input, output: out });
   }
 
   onProgress({ percent: 100, stage: '完成' });
-  return { success: true, action: 'dex2jar', results, outputDir, fallback: !dexTools };
+  return { success: true, action: 'dex2jar', results, outputDir };
 }
 
 /** dex-tools 的入口脚本：Windows 是 .bat，其它是 .sh */
-function resolveDexTools(toolInstaller) {
-  const bins = toolInstaller?.binDirectories?.() || [];
+function resolveDexTools(toolInstaller, extraDirs = []) {
+  const bins = [];
+  for (const dir of extraDirs) {
+    if (!dir) continue;
+    const resolved = path.resolve(dir);
+    if (fs.existsSync(resolved)) bins.push(resolved);
+  }
+  bins.push(...(toolInstaller?.binDirectories?.() || []));
   const script = process.platform === 'win32' ? 'd2j-dex2jar.bat' : 'd2j-dex2jar.sh';
   for (const dir of bins) {
     const full = path.join(dir, script);
@@ -264,15 +334,15 @@ function resolveDexTools(toolInstaller) {
  * java -jar cfr.jar <jar> --outputdir <dir>
  */
 async function decompileJar(ctx, inputs, outputDir, options) {
-  const { runToolStream, toolInstaller } = ctx;
+  const { runToolStream, toolInstaller, extraDirs } = ctx;
   const { onProgress = () => {} } = options;
-  const cfr = requireJar(toolInstaller, 'cfr.jar', 'CFR');
+  const cfr = requireJar(toolInstaller, 'cfr.jar', 'CFR', extraDirs);
   await fsp.mkdir(outputDir, { recursive: true });
   const results = [];
 
   for (let i = 0; i < inputs.length; i += 1) {
     const input = inputs[i];
-    const outDir = path.join(outputDir, `${stem(input)}_src`);
+    const outDir = path.join(outputDir, modifyDirName(`${stem(input)}_src`));
     await fsp.rm(outDir, { recursive: true, force: true }).catch(() => {});
     await fsp.mkdir(outDir, { recursive: true });
     onProgress({
@@ -294,8 +364,8 @@ async function decompileJar(ctx, inputs, outputDir, options) {
 /**
  * 回编译 jar：javac → jar
  *
- * 按「每个源文件各算一个顶层目录」分桶：多份源码互不干扰，产物命名也不会撞车。
- * 顶层目录指的是源文件所在目录往上追溯到第一个「不再被其它源文件共享」的层。
+ * 按源文件「直接所在目录」分桶：同一目录下的源文件编进同一个 jar，不同目录互不干扰，
+ * 产物命名也不会撞车。参见 bucketByRoot。
  */
 async function recompileJar(ctx, inputs, outputDir, options) {
   const { runTool } = ctx;
@@ -310,8 +380,8 @@ async function recompileJar(ctx, inputs, outputDir, options) {
   let index = 0;
   for (const [root, files] of buckets) {
     const name = path.basename(root) || 'classes';
-    const classDir = path.join(outputDir, `${name}_classes`);
-    const jarOut = path.join(outputDir, `${name}.jar`);
+    const classDir = path.join(outputDir, modifyDirName(`${name}_classes`));
+    const jarOut = path.join(outputDir, `${name}_modify.jar`);
     await fsp.rm(classDir, { recursive: true, force: true }).catch(() => {});
     await fsp.mkdir(classDir, { recursive: true });
 
@@ -354,15 +424,15 @@ function bucketByRoot(sources) {
  * baksmali 需要绝对路径（实测相对路径会报 Can't find file），inputs 已 resolve 过。
  */
 async function decompileDex(ctx, inputs, outputDir, options) {
-  const { runToolStream, toolInstaller } = ctx;
+  const { runToolStream, toolInstaller, extraDirs } = ctx;
   const { onProgress = () => {} } = options;
-  const baksmali = requireJar(toolInstaller, 'baksmali.jar', 'baksmali');
+  const baksmali = requireJar(toolInstaller, 'baksmali.jar', 'baksmali', extraDirs);
   await fsp.mkdir(outputDir, { recursive: true });
   const results = [];
 
   for (let i = 0; i < inputs.length; i += 1) {
     const input = inputs[i];
-    const outDir = path.join(outputDir, `${stem(input)}_smali`);
+    const outDir = path.join(outputDir, modifyDirName(`${stem(input)}_smali`));
     await fsp.rm(outDir, { recursive: true, force: true }).catch(() => {});
     await fsp.mkdir(outDir, { recursive: true });
     onProgress({
@@ -386,9 +456,9 @@ async function decompileDex(ctx, inputs, outputDir, options) {
  * java -jar smali.jar a <dir> -o <out.dex>
  */
 async function recompileDex(ctx, inputs, outputDir, options) {
-  const { runToolStream, toolInstaller } = ctx;
+  const { runToolStream, toolInstaller, extraDirs } = ctx;
   const { onProgress = () => {} } = options;
-  const smali = requireJar(toolInstaller, 'smali.jar', 'smali');
+  const smali = requireJar(toolInstaller, 'smali.jar', 'smali', extraDirs);
   await fsp.mkdir(outputDir, { recursive: true });
   const results = [];
 
@@ -398,7 +468,7 @@ async function recompileDex(ctx, inputs, outputDir, options) {
   for (let i = 0; i < dirs.length; i += 1) {
     const dir = dirs[i];
     const name = path.basename(dir) || 'classes';
-    const out = path.join(outputDir, `${name}.dex`);
+    const out = path.join(outputDir, `${name}_modify.dex`);
     onProgress({
       percent: Math.round((i / dirs.length) * 90),
       stage: 'smali 回编译',
@@ -413,6 +483,119 @@ async function recompileDex(ctx, inputs, outputDir, options) {
 
   onProgress({ percent: 100, stage: '完成' });
   return { success: true, action: 'dex-recompile', results, outputDir };
+}
+
+// ---------------- odex / vdex 反编译 ----------------
+
+const DEX_MAGIC = Buffer.from('dex\n', 'latin1');
+const DEX_HEADER_MIN = 112; // dex 头固定长度（0x70）
+
+/** 文件头是不是一个裸 dex（dex\n0xx）。 */
+function isDexBuffer(buffer) {
+  return Buffer.isBuffer(buffer) && buffer.length >= 8 && buffer.toString('latin1', 0, 4) === 'dex\n';
+}
+
+/**
+ * 从 odex / vdex 容器里「抠」出内嵌的 dex。
+ *
+ * odex / vdex 本质是把一批 dex 拼在容器里，dex 之间还夹着 ELF 头 / 元数据。
+ * 这里不解析容器格式，直接按 dex 魔数定位、再用 dex 头里的 file_size 切出完整 segment：
+ * 对未 quicken 的 vdex / odex 足够用，也不需要用户额外装 vdexExtractor。
+ */
+function carveDexBuffers(buffer) {
+  const out = [];
+  if (!Buffer.isBuffer(buffer) || buffer.length < DEX_HEADER_MIN) return out;
+  let from = 0;
+  while (from < buffer.length) {
+    const at = buffer.indexOf(DEX_MAGIC, from);
+    if (at < 0 || at + DEX_HEADER_MIN > buffer.length) break;
+    const fileSize = buffer.readUInt32LE(at + 32);
+    const headerSize = buffer.readUInt32LE(at + 36);
+    if (fileSize < DEX_HEADER_MIN || headerSize < DEX_HEADER_MIN || at + fileSize > buffer.length) {
+      from = at + 8; // 魔数误命中，继续往后找
+      continue;
+    }
+    out.push(buffer.subarray(at, at + fileSize));
+    from = at + fileSize;
+  }
+  return out;
+}
+
+/**
+ * 反编译 odex / vdex：先提取内嵌 dex，再 baksmali 成 smali（两步）。
+ *
+ * 1) 提取：裸 dex 直接用；odex / vdex 按魔数切出全部内嵌 dex，落盘到 <stem>_dex/
+ * 2) 反编译：对每个提取出的 dex 跑 baksmali，产物统一落到 <stem>_smali/
+ *
+ * 单个文件提取失败不中断整批，失败项收集到 failures 里一并返回。
+ */
+async function odexDecompile(ctx, inputs, outputDir, options) {
+  const { runToolStream, toolInstaller, extraDirs } = ctx;
+  const { onProgress = () => {} } = options;
+  const baksmali = requireJar(toolInstaller, 'baksmali.jar', 'baksmali', extraDirs);
+  await fsp.mkdir(outputDir, { recursive: true });
+  const results = [];
+  const failures = [];
+
+  for (let i = 0; i < inputs.length; i += 1) {
+    const input = inputs[i];
+    const base = Math.round((i / inputs.length) * 90);
+    onProgress({ percent: base, stage: '提取 dex', detail: path.basename(input) });
+
+    let dexBuffers;
+    try {
+      const buffer = await fsp.readFile(input);
+      dexBuffers = isDexBuffer(buffer) ? [buffer] : carveDexBuffers(buffer);
+    } catch (error) {
+      failures.push({ input, error: error.message });
+      continue;
+    }
+    if (!dexBuffers.length) {
+      failures.push({ input, error: '未在文件中找到内嵌的 dex' });
+      continue;
+    }
+
+    const dexDir = path.join(outputDir, modifyDirName(`${stem(input)}_dex`));
+    const smaliDir = path.join(outputDir, modifyDirName(`${stem(input)}_smali`));
+    await fsp.rm(dexDir, { recursive: true, force: true }).catch(() => {});
+    await fsp.rm(smaliDir, { recursive: true, force: true }).catch(() => {});
+    await fsp.mkdir(dexDir, { recursive: true });
+    await fsp.mkdir(smaliDir, { recursive: true });
+
+    const dexFiles = [];
+    for (let d = 0; d < dexBuffers.length; d += 1) {
+      const name = dexBuffers.length === 1 ? 'classes.dex' : `classes${d + 1}.dex`;
+      const target = path.join(dexDir, name);
+      await fsp.writeFile(target, dexBuffers[d]);
+      dexFiles.push(target);
+    }
+
+    for (let d = 0; d < dexFiles.length; d += 1) {
+      onProgress({
+        percent: base + Math.round(((d + 1) / dexFiles.length) * (90 / inputs.length)),
+        stage: 'baksmali 反编译',
+        detail: `${path.basename(input)} · ${path.basename(dexFiles[d])}`
+      });
+      await runStream(runToolStream, 'java', ['-jar', baksmali, 'd', dexFiles[d], '-o', smaliDir], {
+        onProgress,
+        stage: 'baksmali'
+      });
+    }
+
+    results.push({ input, dexDir, dexFiles, output: smaliDir, count: dexFiles.length });
+  }
+
+  if (!results.length) {
+    throw new Error(
+      `未能在输入中提取到 dex：${failures
+        .slice(0, 3)
+        .map((item) => `${path.basename(item.input)}（${item.error}）`)
+        .join('、')}`
+    );
+  }
+
+  onProgress({ percent: 100, stage: '完成' });
+  return { success: true, action: 'odex-decompile', results, failures, outputDir };
 }
 
 /**
@@ -439,7 +622,8 @@ const ACTIONS = {
   'jar-decompile': { fn: decompileJar, label: '反编译 jar', collect: collectConvertibles, accept: (f) => isJarLike(f) },
   'jar-recompile': { fn: recompileJar, label: '回编译 jar', collect: null, accept: null },
   'dex-decompile': { fn: decompileDex, label: '反编译 dex', collect: collectConvertibles, accept: (f) => isDexLike(f) },
-  'dex-recompile': { fn: recompileDex, label: '回编译 dex', collect: null, accept: null }
+  'dex-recompile': { fn: recompileDex, label: '回编译 dex', collect: null, accept: null },
+  'odex-decompile': { fn: odexDecompile, label: '反编译 odex', collect: collectOdexInputs, accept: (f) => isOdexLike(f) }
 };
 
 const ACTION_LIST = Object.entries(ACTIONS).map(([id, def]) => ({
@@ -457,10 +641,11 @@ const ACTION_LIST = Object.entries(ACTIONS).map(([id, def]) => ({
  * @param {Function} payload.runTool       来自 tool-env.js
  * @param {Function} payload.runToolStream 来自 tool-env.js
  * @param {object} payload.toolInstaller   tool-installer 模块
+ * @param {string[]} [payload.extraDirs]   用户自定义工具目录（UI 上「选择目录」指定）
  * @param {Function} [payload.onProgress]  ({percent, stage, detail}) => void
  */
 async function runDexAction(payload = {}) {
-  const { action, inputs = [], outputDir, onProgress } = payload;
+  const { action, inputs = [], outputDir, onProgress, extraDirs = [] } = payload;
   const def = ACTIONS[action];
   if (!def) throw new Error(`未知操作: ${action}`);
   if (!outputDir) throw new Error('缺少输出目录');
@@ -484,7 +669,8 @@ async function runDexAction(payload = {}) {
   const ctx = {
     runTool: payload.runTool,
     runToolStream: payload.runToolStream,
-    toolInstaller: payload.toolInstaller
+    toolInstaller: payload.toolInstaller,
+    extraDirs
   };
   return await def.fn(ctx, fileInputs, outputDir, { onProgress });
 }
@@ -497,7 +683,10 @@ module.exports = {
   collectConvertibles,
   collectJavaSources,
   collectSmaliDirs,
+  collectOdexInputs,
+  carveDexBuffers,
   findJarTool,
   resolveDexTools,
+  resolveDefaultOutputDir,
   bucketByRoot
 };

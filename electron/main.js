@@ -31,7 +31,7 @@ const { createIosMirror } = require('./ios-mirror');
 const { createIosControl, describeWdaStartFailure } = require('./ios-control');
 const { createAutoPilot } = require('./autopilot');
 const batchRename = require('./batch-rename');
-const { parsePackageStaticInfo, comparePackageInfo, searchPackageSymbols } = require('./pkginfo');
+const { parsePackageStaticInfo, comparePackageInfo, searchPackageSymbols, buildLaunchCommand, inspectPacker } = require('./pkginfo');
 const { openZip } = require('./pkginfo/zip');
 const { extractMachoSymbols } = require('./pkginfo/macho-symbols');
 const { createBatchScanner, toCsv, toMarkdown, BATCH_COLUMNS } = require('./pkginfo/batch');
@@ -39,7 +39,8 @@ const { createPlatformCapabilities } = require('./platform-capabilities');
 const {
   runDexAction,
   findJarTool,
-  resolveDexTools
+  resolveDexTools,
+  resolveDefaultOutputDir
 } = require('./dex-toolkit');
 const {
   planInstallBatch,
@@ -1890,10 +1891,51 @@ async function detectToolSafe(tool, args) {
   }
 }
 
+async function detectToolPath(tool, args) {
+  try {
+    const result = await detectTool(tool, args);
+    return result.installed ? result.path : null;
+  } catch (_) {
+    return null;
+  }
+}
+
 function resolveDexToolDir(toolId) {
   const tool = toolInstaller.TOOL_DEFS.find((item) => item.id === toolId);
   if (!tool) return toolInstaller.toolRoot();
   return toolInstaller.installDirFor(tool);
+}
+
+// Dex 工具集的可下载工具（jar 类 + dex-tools 压缩包），其余（d8 / javac）来自系统
+const DEX_DOWNLOADABLE_IDS = ['baksmali', 'smali', 'cfr', 'dex-tools'];
+
+/** 用户自定义工具目录的持久化配置文件（userData/dex-tools.json）。 */
+function dexToolConfigPath() {
+  return path.join(app.getPath('userData'), 'dex-tools.json');
+}
+
+function loadDexToolDirs() {
+  try {
+    const file = dexToolConfigPath();
+    if (!fs.existsSync(file)) return {};
+    const data = JSON.parse(fs.readFileSync(file, 'utf-8'));
+    const raw = data?.customDirs;
+    if (!raw || typeof raw !== 'object') return {};
+    const out = {};
+    for (const [key, value] of Object.entries(raw)) {
+      if (typeof value === 'string' && value) out[key] = value;
+    }
+    return out;
+  } catch (_) {
+    return {};
+  }
+}
+
+function saveDexToolDirs(dirs) {
+  const file = dexToolConfigPath();
+  const temp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(temp, JSON.stringify({ customDirs: dirs }, null, 2));
+  fs.renameSync(temp, file);
 }
 
 function sendDexProgress(event, jobId, info) {
@@ -1905,71 +1947,140 @@ function sendDexProgress(event, jobId, info) {
 }
 
 /**
- * 探测 jar 类工具（baksmali / smali / cfr）与 dex-tools 是否可用。
+ * 探测依赖工具（baksmali / smali / cfr / dex-tools / d8 / javac）的状态。
+ *
+ * 每个工具都会返回 `path`（解析到的实际文件路径，找不到为 null）、
+ * `customDir`（用户在 UI 上指定的自定义目录）与 `downloadable`（是否可下载）。
  *
  * 平台策略（用户确认）：Windows 走应用内一键安装；mac / Linux 优先用系统上已有的，
- * 没有就在 UI 上给「在线下载」入口，不替用户静默改动系统目录。
+ * 没有就在 UI 上给「下载 / 选择本地目录」入口，不替用户静默改动系统目录。
  */
-ipcMain.handle('dex-toolkit:status', async () => ({
-  platform: process.platform,
-  windowsAutoInstall: process.platform === 'win32',
-  tools: getDexJarTools().map((item) => {
-    const found = findJarTool(toolInstaller, item.jar);
+ipcMain.handle('dex-toolkit:status', async () => {
+  const customDirs = loadDexToolDirs();
+  const dirsFor = (id) => (customDirs[id] ? [customDirs[id]] : []);
+
+  const jarTools = getDexJarTools().map((item) => {
+    const found = findJarTool(toolInstaller, item.jar, dirsFor(item.id));
+    const defaultDir = resolveDexToolDir(item.id);
     return {
       id: item.id,
       name: item.name,
       jar: item.jar,
+      kind: 'jar',
       installed: Boolean(found),
       path: found,
+      customDir: customDirs[item.id] || '',
+      dir: defaultDir,
+      // 展示给用户的「所在目录」：优先实际命中的目录，其次是自定义目录，最后是默认安装目录
+      locatedDir: found ? path.dirname(found) : (customDirs[item.id] || defaultDir),
+      downloadable: true,
       url: item.url,
       approxBytes: item.approxBytes,
       note: item.note
     };
-  }),
-  dexTools: Boolean(resolveDexTools(toolInstaller)),
-  d8: Boolean(await detectToolSafe('d8', ['--version'])),
-  javac: Boolean(await detectToolSafe('javac', ['-version'])),
-  toolDir: toolInstaller.toolRoot()
-}));
+  });
 
-/** 「在线下载」：把 jar 工具下载到应用工具目录，让用户自己决定要不要装。 */
-ipcMain.handle('dex-toolkit:download', async (event, payload = {}) => {
-  const item = getDexJarTools().find((entry) => entry.id === payload.toolId);
-  if (!item) return { ok: false, error: '未知工具' };
-  const jobId = `dex-dl-${item.id}`;
-  const dir = resolveDexToolDir(item.id);
-  const target = path.join(dir, item.jar);
-  try {
-    await fsp.mkdir(path.dirname(target), { recursive: true });
-    const urls = toolInstaller.urlCandidates(
-      toolInstaller.TOOL_DEFS.find((tool) => tool.id === item.id) || item
-    );
-    let lastError = null;
-    for (const url of urls) {
-      try {
-        // 下载到 .part 再落位，中断不会留下可用的半成品
-        await toolInstaller.downloadToFile(url, target, {
-          onProgress: ({ received, total, percent }) => {
-            sendDexProgress(event, jobId, { stage: '下载', percent: percent ?? null, detail: item.name });
-          }
-        });
-        lastError = null;
-        break;
-      } catch (error) {
-        lastError = error;
+  const dexTools = resolveDexTools(toolInstaller, dirsFor('dex-tools'));
+  const dexToolsDefaultDir = resolveDexToolDir('dex-tools');
+  const d8Path = await detectToolPath('d8', ['--version']);
+  const javacPath = await detectToolPath('javac', ['-version']);
+
+  return {
+    platform: process.platform,
+    windowsAutoInstall: process.platform === 'win32',
+    tools: [
+      ...jarTools,
+      {
+        id: 'dex-tools',
+        name: 'dex-tools（d2j-dex2jar）',
+        kind: 'dex-tools',
+        note: 'Dex 工具集：dex2jar（dex → jar，还原真正的 .class）',
+        installed: Boolean(dexTools),
+        path: dexTools,
+        customDir: customDirs['dex-tools'] || '',
+        dir: dexToolsDefaultDir,
+        locatedDir: dexTools ? path.dirname(dexTools) : (customDirs['dex-tools'] || dexToolsDefaultDir),
+        downloadable: true
+      },
+      {
+        id: 'd8',
+        name: 'd8',
+        kind: 'builtin',
+        note: '随 Android SDK build-tools 提供：DEX → DEX（优化）+ 桥梁',
+        installed: Boolean(d8Path),
+        path: d8Path,
+        customDir: '',
+        locatedDir: d8Path ? path.dirname(d8Path) : '',
+        downloadable: false
+      },
+      {
+        id: 'javac',
+        name: 'javac / jar',
+        kind: 'builtin',
+        note: '随 JDK 提供：Java 编译 / 打包',
+        installed: Boolean(javacPath),
+        path: javacPath,
+        customDir: '',
+        locatedDir: javacPath ? path.dirname(javacPath) : '',
+        downloadable: false
       }
-    }
-    if (lastError) throw lastError;
+    ],
+    dexTools: Boolean(dexTools),
+    d8: Boolean(d8Path),
+    javac: Boolean(javacPath),
+    toolDir: toolInstaller.toolRoot()
+  };
+});
+
+/**
+ * 「下载」：走 tool-installer 的安装流程，落到应用工具目录。
+ * jar 类落成 <dir>/<jarName>，dex-tools 解压后摊平 —— 之后都能被自动搜索到。
+ */
+ipcMain.handle('dex-toolkit:download', async (event, payload = {}) => {
+  const toolId = payload.toolId;
+  if (!DEX_DOWNLOADABLE_IDS.includes(toolId)) return { ok: false, error: '未知工具' };
+  const jobId = `dex-dl-${toolId}`;
+  try {
+    await toolInstaller.installTool(toolId, {
+      onProgress: (info) => sendDexProgress(event, jobId, info)
+    });
     refreshToolEnvironment();
-    return { ok: true, toolId: item.id, path: target };
+    // 安装后重新解析一次，返回实际落地的文件路径（找不到则返回 null，前端会以状态刷新为准）
+    const customDirs = loadDexToolDirs();
+    const dirs = customDirs[toolId] ? [customDirs[toolId]] : [];
+    let installedPath = null;
+    if (toolId === 'dex-tools') {
+      installedPath = resolveDexTools(toolInstaller, dirs);
+    } else {
+      const def = toolInstaller.TOOL_DEFS.find((item) => item.id === toolId);
+      installedPath = def ? findJarTool(toolInstaller, def.jarName, dirs) : null;
+    }
+    return { ok: true, toolId, path: installedPath || null };
   } catch (error) {
-    return { ok: false, toolId: item.id, error: error.message };
+    return { ok: false, toolId, error: error.message };
   }
+});
+
+/** 「选择目录」：持久化用户指定的工具目录（dir 为空字符串表示清除）。 */
+ipcMain.handle('dex-toolkit:set-tool-dir', async (_event, payload = {}) => {
+  const toolId = payload.toolId;
+  if (!toolId) return { ok: false, error: '缺少工具 id' };
+  const dir = typeof payload.dir === 'string' ? payload.dir.trim() : '';
+  const dirs = loadDexToolDirs();
+  if (dir) dirs[toolId] = path.resolve(dir);
+  else delete dirs[toolId];
+  try {
+    saveDexToolDirs(dirs);
+  } catch (error) {
+    return { ok: false, error: `保存失败: ${error.message}` };
+  }
+  return { ok: true, toolId, dir: dirs[toolId] || '' };
 });
 
 ipcMain.handle('dex-toolkit:run', async (event, payload = {}) => {
   const jobId = payload.jobId || `dex-${Date.now()}`;
   const onProgress = (info) => sendDexProgress(event, jobId, info);
+  const extraDirs = Object.values(loadDexToolDirs()).filter(Boolean);
   try {
     const result = await runDexAction({
       action: payload.action,
@@ -1978,11 +2089,22 @@ ipcMain.handle('dex-toolkit:run', async (event, payload = {}) => {
       runTool,
       runToolStream,
       toolInstaller,
+      extraDirs,
       onProgress
     });
     return { ok: true, jobId, ...result };
   } catch (error) {
     return { ok: false, jobId, error: error.message };
+  }
+});
+
+// 默认输出目录：输入是目录取目录本身，是文件取所在文件夹（与输入同目录）
+ipcMain.handle('dex-toolkit:default-output', async (_event, payload = {}) => {
+  const inputs = Array.isArray(payload) ? payload : (payload.inputs || []);
+  try {
+    return { ok: true, outputDir: await resolveDefaultOutputDir(inputs) };
+  } catch (error) {
+    return { ok: false, error: error.message };
   }
 });
 
@@ -2002,6 +2124,31 @@ ipcMain.handle('dex-toolkit:reveal', async (_event, targetPath) => {
     return { ok: true };
   } catch (_) {
     return { ok: false };
+  }
+});
+
+/**
+ * 启动命令：从 APK / AAB 读出包名与入口 Activity，拼出可复制的 adb 命令。
+ * 只解析 Manifest，不跑 DEX 等重活，所以很快。
+ */
+ipcMain.handle('dex-toolkit:launch-command', async (_event, payload = {}) => {
+  const filePath = typeof payload === 'string' ? payload : (payload.filePath || payload.path || '');
+  if (!filePath) return { ok: false, error: '请选择 APK 文件' };
+  try {
+    return { ok: true, ...buildLaunchCommand(filePath) };
+  } catch (error) {
+    return { ok: false, error: error.message };
+  }
+});
+
+/** 查壳：识别 APK / AAB 的加固方案与对抗特征（独立入口，复用包体解析的签名库）。 */
+ipcMain.handle('dex-toolkit:check-packer', async (_event, payload = {}) => {
+  const filePath = typeof payload === 'string' ? payload : (payload.filePath || payload.path || '');
+  if (!filePath) return { ok: false, error: '请选择 APK 文件' };
+  try {
+    return { ok: true, ...inspectPacker(filePath) };
+  } catch (error) {
+    return { ok: false, error: error.message };
   }
 });
 
@@ -2477,11 +2624,14 @@ ipcMain.handle('select-multiple-files', async () => {
 // 选择文件（带过滤选项）
 ipcMain.handle('select-files', async (event, options) => {
   const opts = options || {};
+  const properties = Array.isArray(opts.properties) ? opts.properties : ['openFile'];
   const result = await dialog.showOpenDialog(mainWindow, {
-    properties: ['openFile'],
+    properties,
     filters: opts.filters || []
   });
-  return result.canceled ? null : result.filePaths[0];
+  if (result.canceled) return null;
+  // 兼容既有调用方：默认单选返回单个路径字符串；显式请求多选时返回路径数组
+  return properties.includes('multiSelections') ? result.filePaths : result.filePaths[0];
 });
 
 // 保存文件对话框

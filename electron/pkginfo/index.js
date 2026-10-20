@@ -15,7 +15,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const { parseAndroidPackage, parseAabBundleConfig, detectContainerKind } = require('./apk');
+const { parseAndroidPackage, parseAabBundleConfig, detectContainerKind, buildLaunchCommand, inspectPacker } = require('./apk');
 const { parseIosPackage } = require('./ipa');
 const { openZip } = require('./zip');
 const { buildSymbolIndex, querySymbolIndex } = require('./symbols');
@@ -331,6 +331,8 @@ module.exports = {
   parsePackageStaticInfo,
   comparePackageInfo,
   searchPackageSymbols,
+  buildLaunchCommand,
+  inspectPacker,
   SECTION_CATALOG,
   SCHEMA_VERSION,
   SUPPORTED_EXTENSIONS,
