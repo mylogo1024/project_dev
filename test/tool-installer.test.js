@@ -25,10 +25,17 @@ test('未安装时 binDirectories 只包含自定义工具目录', () => {
   assert.deepEqual(installer.binDirectories(), [path.resolve(SANDBOX)]);
 });
 
-test('listInstalled 覆盖全部可安装工具', () => {
-  const ids = installer.listInstalled().map((item) => item.id);
+test('listInstalled 覆盖全部可安装工具（Windows 视角）', () => {
+  const ids = installer.listInstalled({ platform: 'win32' }).map((item) => item.id);
   assert.deepEqual(ids, ['adb', 'scrcpy', 'apktool', 'baksmali', 'smali', 'dex-tools', 'cfr']);
-  assert.ok(installer.listInstalled().every((item) => item.installed === false));
+  assert.ok(installer.listInstalled({ platform: 'win32' }).every((item) => item.installed === false));
+});
+
+test('macOS / Linux 只列出 jar 类工具，不含 adb / scrcpy', () => {
+  const ids = installer.listInstalled({ platform: 'darwin' }).map((item) => item.id);
+  assert.ok(!ids.includes('adb'), 'adb 是 Windows 专用');
+  assert.ok(!ids.includes('scrcpy'), 'scrcpy 是 Windows 专用');
+  assert.deepEqual(ids, ['apktool', 'baksmali', 'smali', 'dex-tools', 'cfr']);
 });
 
 test('版本号被清洗成单段目录名，无法穿越到父目录', () => {

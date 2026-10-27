@@ -1306,6 +1306,10 @@ async function extractIpaAppDirectory(ipaPath, onProgress) {
 
 async function installAppPackage(filePath, deviceId, platformHint, onProgress, control) {
   if (!filePath || !fs.existsSync(filePath)) throw new Error('安装包不存在');
+  // 选了文件夹而非安装包本身：直接给出清晰提示，不要丢给 adb / ideviceinstaller 报 cryptic 错误
+  if (fs.statSync(filePath).isDirectory()) {
+    throw new Error('请选择 APK / IPA 安装包文件本身，而不是文件夹');
+  }
   const platform = platformHint || detectPlatformFromPackage(filePath);
   if (platform !== 'android' && platform !== 'ios') {
     throw new Error('仅支持 .apk 或 .ipa 安装包');
@@ -2159,10 +2163,10 @@ ipcMain.handle('dex-toolkit:check-packer', async (_event, payload = {}) => {
 // mac / Linux 直接返回 supported:false，前端不展示这块 UI（brew / apt 一行命令就够）。
 
 ipcMain.handle('tool-installer:list', async () => ({
-  supported: process.platform === 'win32',
+  supported: true,
   platform: process.platform,
   root: toolInstaller.toolRoot(),
-  tools: toolInstaller.listInstalled()
+  tools: toolInstaller.listInstalled({ platform: process.platform })
 }));
 
 ipcMain.handle('tool-installer:install', async (event, payload = {}) => {

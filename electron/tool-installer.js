@@ -64,8 +64,11 @@ const TOOL_DEFS = [
   {
     id: 'adb',
     name: 'Android Platform Tools（adb / fastboot）',
+    platforms: ['win32'],
     provides: ['adb'],
     kind: 'zip',
+    platforms: ['win32'],
+    platforms: ['win32'],
     versionUrl: null,
     version: 'latest',
     url: 'https://dl.google.com/android/repository/platform-tools-latest-windows.zip',
@@ -77,6 +80,8 @@ const TOOL_DEFS = [
   {
     id: 'scrcpy',
     name: 'scrcpy（Android 投屏）',
+    platforms: ['win32'],
+    platforms: ['win32'],
     provides: ['scrcpy'],
     kind: 'zip',
     versionUrl: 'https://api.github.com/repos/Genymobile/scrcpy/releases/latest',
@@ -93,6 +98,8 @@ const TOOL_DEFS = [
     name: 'apktool（APK 反编译 / 回编译）',
     provides: ['apktool'],
     kind: 'apktool',
+    platforms: ['darwin', 'win32', 'linux'],
+    platforms: ['darwin', 'win32', 'linux'],
     versionUrl: 'https://api.github.com/repos/iBotPeaches/Apktool/releases/latest',
     version: '3.0.3',
     urlTemplate: (version) =>
@@ -120,6 +127,8 @@ const TOOL_DEFS = [
     provides: ['baksmali'],
     kind: 'jar',
     jarName: 'baksmali.jar',
+    platforms: ['darwin', 'win32', 'linux'],
+    platforms: ['darwin', 'win32', 'linux'],
     versionUrl: null,
     version: '2.5.2',
     // bitbucket 是 smali 官方发布点，直连即可；失败回退到 GitHub release
@@ -137,6 +146,8 @@ const TOOL_DEFS = [
     provides: ['smali'],
     kind: 'jar',
     jarName: 'smali.jar',
+    platforms: ['darwin', 'win32', 'linux'],
+    platforms: ['darwin', 'win32', 'linux'],
     versionUrl: null,
     version: '2.5.2',
     url: 'https://bitbucket.org/JesusFreke/smali/downloads/smali-2.5.2.jar',
@@ -153,6 +164,8 @@ const TOOL_DEFS = [
     provides: ['d2j-dex2jar'],
     kind: 'dex-tools',
     jarName: 'd2j-dex2jar.jar',
+    platforms: ['darwin', 'win32', 'linux'],
+    platforms: ['darwin', 'win32', 'linux'],
     versionUrl: 'https://api.github.com/repos/pxb1988/dex2jar/releases/latest',
     version: '2.4',
     urlTemplate: (version) =>
@@ -167,6 +180,8 @@ const TOOL_DEFS = [
     provides: ['cfr'],
     kind: 'jar',
     jarName: 'cfr.jar',
+    platforms: ['darwin', 'win32', 'linux'],
+    platforms: ['darwin', 'win32', 'linux'],
     versionUrl: null,
     version: '0.152',
     url: 'https://repo1.maven.org/maven2/org/benf/cfr/0.152/cfr-0.152.jar',
@@ -211,23 +226,28 @@ function binDirectories() {
   return dirs;
 }
 
-/** 已安装工具清单，供「已装/可装」UI 展示。 */
-function listInstalled() {
-  return TOOL_DEFS.map((tool) => {
-    const dir = installDirFor(tool);
-    const marker = path.join(dir, markerName(tool));
-    const installed = fs.existsSync(marker);
-    return {
-      id: tool.id,
-      name: tool.name,
-      version: tool.version,
-      installed,
-      dir: installed ? dir : null,
-      provides: tool.provides,
-      providesNote: tool.providesNote,
-      approxBytes: tool.approxBytes
-    };
-  });
+/** 已安装工具清单，供「已装/可装」UI 展示。
+ * @param {{platform?: string}} [options] 只返回该平台支持的工具（adb/scrcpy 限 Windows）
+ */
+function listInstalled(options = {}) {
+  const platform = options.platform || process.platform;
+  return TOOL_DEFS
+    .filter((tool) => !tool.platforms || tool.platforms.includes(platform))
+    .map((tool) => {
+      const dir = installDirFor(tool);
+      const marker = path.join(dir, markerName(tool));
+      const installed = fs.existsSync(marker);
+      return {
+        id: tool.id,
+        name: tool.name,
+        version: tool.version,
+        installed,
+        dir: installed ? dir : null,
+        provides: tool.provides,
+        providesNote: tool.providesNote,
+        approxBytes: tool.approxBytes
+      };
+    });
 }
 
 /**
