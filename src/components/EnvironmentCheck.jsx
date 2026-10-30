@@ -138,6 +138,8 @@ const OS_LABEL = {
 
 const osFamily = (platform) => {
   const value = String(platform || '').toLowerCase();
+  // 'darwin' 以 "win" 结尾，必须先精确匹配 darwin，否则 macOS 会被误判为 win32
+  if (value === 'darwin' || value.startsWith('mac')) return 'darwin';
   if (value.includes('win')) return 'win32';
   if (value.includes('linux')) return 'linux';
   return 'darwin';
