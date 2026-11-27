@@ -2056,6 +2056,55 @@ body {
   gap: 6px;
 }
 
+.dex-table {
+  border: 1px solid #e0e2e6;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #fff;
+  font-size: 12px;
+}
+
+.dex-table__head,
+.dex-table__row {
+  display: grid;
+  grid-template-columns: 1fr 64px 80px 80px 76px;
+  gap: 10px;
+  padding: 7px 12px;
+  align-items: center;
+}
+
+.dex-table__head {
+  background: #f1f3f4;
+  color: #5f6368;
+  font-weight: 600;
+}
+
+.dex-table__row {
+  border-top: 1px solid #eef0f2;
+  color: #3c4043;
+}
+
+.dex-table__row > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
+}
+
+.dex-table__head > span:not(:first-child),
+.dex-table__row > span:not(:first-child) {
+  text-align: right;
+}
+
+.dex-table__empty {
+  padding: 10px 12px;
+  font-size: 12px;
+  color: #5f6368;
+  background: #fff;
+  border: 1px solid #e0e2e6;
+  border-radius: 8px;
+}
+
 .dex-cmd {
   display: flex;
   align-items: center;
@@ -5370,6 +5419,89 @@ mark.search-highlight-active {
   color: #9aa0a6;
   font-size: 12px;
 }
+
+/* ---------- 反编译：多选/拖入列表 + 批量结果 ---------- */
+.decompile-pick__path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #3c4043;
+  font-size: 13px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.decompile-pick__foot {
+  padding: 8px 14px;
+  border-top: 1px solid #eef0f4;
+  background: #fff;
+}
+
+.decompile-batch {
+  margin: 12px 0;
+  border: 1px solid #e5e8f0;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #fbfcfe;
+}
+
+.decompile-batch__head {
+  padding: 10px 14px;
+  border-bottom: 1px solid #eef0f4;
+  background: #f2f4fb;
+  color: #3c4043;
+  font-size: 13px;
+}
+
+.decompile-batch__head b { color: #202124; }
+
+.decompile-batch__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.decompile-batch__row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 14px;
+  border-bottom: 1px solid #eef0f4;
+  border-left: 3px solid #34a853;
+  background: #fff;
+}
+
+.decompile-batch__row.is-fail {
+  border-left-color: #ea4335;
+}
+
+.decompile-batch__row:last-child { border-bottom: none; }
+
+.decompile-batch__name {
+  flex: 0 0 30%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #202124;
+  font-size: 13px;
+}
+
+.decompile-batch__state {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #5f6368;
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.decompile-batch__row.is-fail .decompile-batch__state { color: #c5221f; }
 
 /* ==================== iOS 点击操控 ==================== */
 

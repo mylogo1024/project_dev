@@ -26,6 +26,7 @@ const fs = require('fs');
 const fsp = require('fs/promises');
 const path = require('path');
 const os = require('os');
+const { openZip } = require('./pkginfo/zip');
 
 const DEX_EXT = new Set(['.dex', '.apk']);
 const JAR_LIKE_EXT = new Set(['.jar', '.zip']);
@@ -614,6 +615,202 @@ function runStream(runToolStream, executable, args, { onProgress, stage, timeout
   });
 }
 
+// ---------------- 查看 APK / AAB 的 dex / arsc ----------------
+
+const MAX_INSPECT_DEX = 100; // 一个包里的 dex 通常个位数；兜底防止极端包把界面撑爆
+
+/** 读 dex 头（固定 112 字节）里的版本号与各表大小。 */
+function readDexHeader(buffer) {
+  if (!isDexBuffer(buffer) || buffer.length < DEX_HEADER_MIN) return null;
+  const version = buffer.toString('latin1', 4, 7);
+  return {
+    version: `${version[0]}.${version[1]}.${version[2]}`,
+    fileSize: buffer.readUInt32LE(32),
+    stringIds: buffer.readUInt32LE(56),
+    typeIds: buffer.readUInt32LE(64),
+    protoIds: buffer.readUInt32LE(72),
+    fieldIds: buffer.readUInt32LE(80),
+    methodIds: buffer.readUInt32LE(88),
+    classDefs: buffer.readUInt32LE(96)
+  };
+}
+
+// resources.arsc（资源表）相关常量
+const RES_STRING_POOL_TYPE = 0x0001;
+const RES_TABLE_TYPE = 0x0002;
+const RES_TABLE_PACKAGE_TYPE = 0x0200;
+const UTF8_FLAG = 0x0100;
+
+/** 读字符串池里的变长长度（首位为 1 表示两字节）。 */
+function readPoolLength(buffer, pos) {
+  const first = buffer[pos];
+  if (first & 0x80) return ((first & 0x7f) << 8) | buffer[pos + 1];
+  return first;
+}
+
+function poolLengthBytes(buffer, pos) {
+  return (buffer[pos] & 0x80) ? 2 : 1;
+}
+
+function readUtf8PoolString(buffer, start) {
+  let pos = start;
+  const lenBytes = poolLengthBytes(buffer, pos);
+  pos += lenBytes; // 跳过 UTF-16 长度
+  const byteLen = readPoolLength(buffer, pos);
+  pos += poolLengthBytes(buffer, pos);
+  return buffer.toString('utf8', pos, pos + byteLen);
+}
+
+function readUtf16PoolString(buffer, start) {
+  let pos = start;
+  const charLen = readPoolLength(buffer, pos);
+  pos += poolLengthBytes(buffer, pos);
+  return buffer.toString('utf16le', pos, pos + charLen * 2);
+}
+
+/**
+ * 解析一个 RES_STRING_POOL 块，取出全部字符串（最多 max 条）。
+ * 只读字符串池，不去解后面的资源条目 —— 「查看」够用，也不至于把大表整份展开。
+ */
+function parseStringPool(chunk, max = 5000) {
+  const headerSize = chunk.readUInt16LE(2);
+  const stringCount = chunk.readUInt32LE(8);
+  const styleCount = chunk.readUInt32LE(12);
+  const flags = chunk.readUInt32LE(16);
+  const stringsStart = chunk.readUInt32LE(20);
+  const isUtf8 = (flags & UTF8_FLAG) !== 0;
+  const limit = Math.min(stringCount, max);
+  const strings = [];
+  for (let i = 0; i < limit; i += 1) {
+    const offsetAt = headerSize + i * 4;
+    if (offsetAt + 4 > chunk.length) break;
+    const offset = chunk.readUInt32LE(offsetAt);
+    const start = stringsStart + offset;
+    if (start < 0 || start >= chunk.length) continue;
+    try {
+      const value = isUtf8 ? readUtf8PoolString(chunk, start) : readUtf16PoolString(chunk, start);
+      strings.push(value);
+    } catch (_) {
+      // 个别条目损坏就跳过，不影响其余字符串
+    }
+  }
+  return {
+    stringCount,
+    styleCount,
+    isUtf8,
+    truncated: stringCount > limit,
+    strings
+  };
+}
+
+/** 包块里读包名 + 类型名（typeStrings 池），用于展示 arsc 里有哪几类资源。 */
+function parseArscPackage(chunk) {
+  const name = chunk.toString('utf16le', 12, 12 + 128 * 2).replace(/\u0000.*$/, '');
+  const typeStringsOffset = chunk.readUInt32LE(12 + 128 * 2);
+  let typeStrings = [];
+  if (typeStringsOffset > 0 && typeStringsOffset + 8 <= chunk.length) {
+    try {
+      typeStrings = parseStringPool(chunk.subarray(typeStringsOffset), 500).strings;
+    } catch (_) {
+      typeStrings = [];
+    }
+  }
+  return { name, typeStrings };
+}
+
+/** 解析 resources.arsc：包数量、各包名与类型名、全局字符串池。 */
+function parseArsc(buffer) {
+  if (!Buffer.isBuffer(buffer) || buffer.length < 12) throw new Error('arsc 文件过小');
+  if (buffer.readUInt16LE(0) !== RES_TABLE_TYPE) throw new Error('不是有效的 resources.arsc 资源表');
+  const headerSize = buffer.readUInt16LE(2);
+  const totalSize = Math.min(buffer.readUInt32LE(4) || buffer.length, buffer.length);
+  const packageCount = buffer.readUInt32LE(8);
+
+  let offset = headerSize;
+  let stringPool = null;
+  const packages = [];
+  while (offset + 8 <= totalSize) {
+    const chunkType = buffer.readUInt16LE(offset);
+    const chunkSize = buffer.readUInt32LE(offset + 4);
+    if (chunkSize < 8 || offset + chunkSize > buffer.length) break;
+    if (chunkType === RES_STRING_POOL_TYPE && !stringPool) {
+      try {
+        stringPool = parseStringPool(buffer.subarray(offset, offset + chunkSize));
+      } catch (_) {
+        stringPool = null;
+      }
+    } else if (chunkType === RES_TABLE_PACKAGE_TYPE) {
+      try {
+        packages.push(parseArscPackage(buffer.subarray(offset, offset + chunkSize)));
+      } catch (_) {
+        // 某个包块解析失败不影响其它包
+      }
+    }
+    offset += chunkSize;
+  }
+  return { packageCount, packages, stringPool };
+}
+
+/**
+ * 查看 APK / AAB 容器里的 dex 与资源表。
+ *
+ * 不反编译、不调外部工具：直接用 ZIP 读取器列条目，dex 读头、arsc 读字符串池，
+ * 让用户对包体结构有个概览。AAB 用 proto 资源表（resources.pb），没有 arsc。
+ */
+function inspectContainer(filePath) {
+  if (typeof filePath !== 'string' || !filePath.trim()) throw new Error('请选择 APK / AAB 文件');
+  const archive = openZip(filePath.trim());
+  try {
+    const dexEntries = archive.entries.filter((entry) => !entry.isDirectory && /\.dex$/i.test(entry.name));
+    const dexFiles = dexEntries.slice(0, MAX_INSPECT_DEX).map((entry) => {
+      let header = null;
+      try {
+        header = readDexHeader(archive.readEntryRaw(entry));
+      } catch (_) {
+        header = null;
+      }
+      return {
+        name: entry.name,
+        size: entry.size,
+        compressedSize: entry.compressedSize,
+        method: entry.methodName,
+        header
+      };
+    });
+
+    const arscEntry = archive.find('resources.arsc');
+    let arsc = null;
+    if (arscEntry) {
+      let parsed = null;
+      let error = null;
+      try {
+        parsed = parseArsc(archive.readEntryRaw(arscEntry));
+      } catch (err) {
+        error = err.message;
+      }
+      arsc = { name: arscEntry.name, size: arscEntry.size, ...(parsed || {}), error };
+    }
+
+    const protoResources = archive.entries
+      .filter((entry) => !entry.isDirectory && /resources\.pb$/i.test(entry.name))
+      .map((entry) => entry.name);
+
+    return {
+      ok: true,
+      fileName: path.basename(filePath.trim()),
+      size: archive.fileSize,
+      entryCount: archive.entries.length,
+      dexFileCount: dexEntries.length,
+      dexFiles,
+      dexTruncated: dexEntries.length > dexFiles.length,
+      arsc,
+      protoResources
+    };
+  } finally {
+    archive.close();
+  }
+}
+
 // ---------------- 分发 ----------------
 
 const ACTIONS = {
@@ -688,5 +885,8 @@ module.exports = {
   findJarTool,
   resolveDexTools,
   resolveDefaultOutputDir,
-  bucketByRoot
+  bucketByRoot,
+  inspectContainer,
+  parseArsc,
+  parseStringPool
 };

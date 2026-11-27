@@ -40,7 +40,8 @@ const {
   runDexAction,
   findJarTool,
   resolveDexTools,
-  resolveDefaultOutputDir
+  resolveDefaultOutputDir,
+  inspectContainer
 } = require('./dex-toolkit');
 const {
   planInstallBatch,
@@ -1602,8 +1603,90 @@ async function decompileIpa(ipaPath, outputPath, onProgress) {
   }
 }
 
-ipcMain.handle('decompile-apk', async (event, inputPath, outputPath, payload = {}) => {
+const DECOMPILABLE_EXT = new Set(['.apk', '.aab', '.ipa']);
+
+/**
+ * 反编译单个包（APK / AAB 走 apktool，IPA 走解包 + 符号提取）。
+ *
+ * 抽出来给「单个」与「批量」两条入口共用，避免两处逻辑各改各的慢慢漂移。
+ */
+async function decompilePackageFile(inputPath, outputPath, onProgress) {
   const ext = path.extname(String(inputPath || '')).toLowerCase();
+  if (ext === '.ipa') {
+    return await decompileIpa(inputPath, outputPath, onProgress);
+  }
+  if (ext !== '.apk' && ext !== '.aab') {
+    throw new Error(`不支持的文件类型 ${ext || '（无扩展名）'}，仅支持 APK / AAB / IPA`);
+  }
+
+  const apkName = path.basename(inputPath, ext);
+  const targetDir = path.join(outputPath, apkName);
+
+  if (fs.existsSync(targetDir)) {
+    fs.rmSync(targetDir, { recursive: true, force: true });
+  }
+
+  onProgress?.({ percent: 10, stage: '调用 apktool 解包' });
+  await runTool('apktool', ['d', inputPath, '-o', targetDir, '-f'], {
+    timeout: 300000,
+    maxBuffer: 16 * 1024 * 1024
+  });
+  onProgress?.({ percent: 100, stage: '完成' });
+  return {
+    success: true,
+    kind: 'apk',
+    outputDir: targetDir,
+    message: `反编译成功，输出目录: ${targetDir}`
+  };
+}
+
+/**
+ * 把「拖入 / 选择的文件与文件夹」展开成真正要反编译的包列表。
+ *
+ * 文件夹递归扫描，文件按扩展名过滤 —— 文件和文件夹混着丢进来也能识别；
+ * 重复路径只算一次，避免同一个包被反编译两遍。
+ */
+function collectDecompileTargets(rawInputs) {
+  const found = [];
+  const seen = new Set();
+  const push = (filePath) => {
+    if (seen.has(filePath)) return;
+    seen.add(filePath);
+    found.push(filePath);
+  };
+  const walk = (dir) => {
+    let entries = [];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch (_) {
+      return; // 没权限 / 已被删除的目录跳过，不影响其它输入
+    }
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(full);
+      } else if (entry.isFile() && DECOMPILABLE_EXT.has(path.extname(entry.name).toLowerCase())) {
+        push(full);
+      }
+    }
+  };
+
+  for (const raw of rawInputs || []) {
+    if (typeof raw !== 'string' || !raw) continue;
+    let stat = null;
+    try {
+      stat = fs.statSync(raw);
+    } catch (_) {
+      stat = null;
+    }
+    if (!stat) continue;
+    if (stat.isDirectory()) walk(raw);
+    else if (DECOMPILABLE_EXT.has(path.extname(raw).toLowerCase())) push(raw);
+  }
+  return found;
+}
+
+ipcMain.handle('decompile-apk', async (event, inputPath, outputPath, payload = {}) => {
   const onProgress = payload?.jobId
     ? (info) => {
       try {
@@ -1613,36 +1696,68 @@ ipcMain.handle('decompile-apk', async (event, inputPath, outputPath, payload = {
     : null;
 
   try {
-    if (ext === '.ipa') {
-      return await decompileIpa(inputPath, outputPath, onProgress);
-    }
-
-    if (ext !== '.apk' && ext !== '.aab') {
-      throw new Error(`不支持的文件类型 ${ext || '（无扩展名）'}，仅支持 APK / AAB / IPA`);
-    }
-
-    const apkName = path.basename(inputPath, ext);
-    const targetDir = path.join(outputPath, apkName);
-
-    if (fs.existsSync(targetDir)) {
-      fs.rmSync(targetDir, { recursive: true, force: true });
-    }
-
-    onProgress?.({ percent: 10, stage: '调用 apktool 解包' });
-    await runTool('apktool', ['d', inputPath, '-o', targetDir, '-f'], {
-      timeout: 300000,
-      maxBuffer: 16 * 1024 * 1024
-    });
-    onProgress?.({ percent: 100, stage: '完成' });
-    return {
-      success: true,
-      kind: 'apk',
-      outputDir: targetDir,
-      message: `反编译成功，输出目录: ${targetDir}`
-    };
+    return await decompilePackageFile(inputPath, outputPath, onProgress);
   } catch (error) {
     throw new Error(`反编译失败: ${error.message}`);
   }
+});
+
+/**
+ * 批量反编译：输入可以是多个包文件，也可以直接是文件夹（自动递归找出里面的包）。
+ * 逐个串行执行（apktool 本身较重，串行更稳），单项失败不影响其余项。
+ */
+ipcMain.handle('decompile-apk-batch', async (event, payload = {}) => {
+  const rawInputs = Array.isArray(payload.inputs) ? payload.inputs : (payload.inputs ? [payload.inputs] : []);
+  const outputDir = payload.outputDir || '';
+  const targets = collectDecompileTargets(rawInputs);
+  if (!targets.length) {
+    throw new Error('没有找到可反编译的 APK / AAB / IPA（选择的文件夹里也没有）');
+  }
+
+  const jobId = payload.jobId || '';
+  const results = [];
+  for (let index = 0; index < targets.length; index += 1) {
+    const input = targets[index];
+    const file = path.basename(input);
+    const onProgress = jobId
+      ? (info) => {
+        try {
+          event.sender.send('decompile-progress', {
+            jobId,
+            index: index + 1,
+            total: targets.length,
+            file,
+            ...info
+          });
+        } catch (_) { /* 窗口可能已关闭，进度发不出去不影响主流程 */ }
+      }
+      : null;
+    try {
+      const res = await decompilePackageFile(input, outputDir, onProgress);
+      results.push({
+        input,
+        ok: true,
+        kind: res.kind,
+        outputDir: res.outputDir,
+        message: res.message,
+        symbols: res.symbols
+      });
+    } catch (error) {
+      results.push({ input, ok: false, error: error.message });
+    }
+  }
+
+  const succeeded = results.filter((item) => item.ok).length;
+  const failed = results.length - succeeded;
+  return {
+    success: failed === 0,
+    total: results.length,
+    succeeded,
+    failed,
+    outputDir,
+    results,
+    message: `批量反编译完成：成功 ${succeeded} 个${failed ? `，失败 ${failed} 个` : ''}`
+  };
 });
 
 ipcMain.handle('rebuild-package:inspect', async (_event, projectDir) => {
@@ -1660,12 +1775,24 @@ ipcMain.handle('rebuild-package', async (event, payload = {}) => {
     }
     : null;
   try {
+    // 回编译签名默认用「设置」里的全局配置，但允许本次单独覆盖
+    // （签名文件 / 别名 / 密码 / 方案都能在回编译页临时改，不动全局配置）
+    const sign = payload.sign && typeof payload.sign === 'object'
+      ? {
+        keystorePath: payload.sign.keystorePath || '',
+        alias: payload.sign.alias || '',
+        password: payload.sign.password || '',
+        v1: payload.sign.v1 !== false,
+        v2: payload.sign.v2 !== false,
+        v3: payload.sign.v3 === true
+      }
+      : loadAppConfig();
     return await rebuildPackage({
       runTool,
       projectDir: payload.projectDir,
       outputPath: payload.outputPath,
       onProgress,
-      sign: loadAppConfig()
+      sign
     });
   } catch (error) {
     throw new Error(`回编译失败: ${error.message}`);
@@ -2162,6 +2289,20 @@ ipcMain.handle('dex-toolkit:check-packer', async (_event, payload = {}) => {
   if (!filePath) return { ok: false, error: '请选择 APK 文件' };
   try {
     return { ok: true, ...inspectPacker(filePath) };
+  } catch (error) {
+    return { ok: false, error: error.message };
+  }
+});
+
+/**
+ * 查看 APK / AAB 里的 dex 与 arsc：纯 JS 读 ZIP 容器，不反编译、不依赖外部工具。
+ * dex 读头（版本 / 各表大小），arsc 读字符串池（字符串列表 + 资源类型名）。
+ */
+ipcMain.handle('dex-toolkit:inspect', async (_event, payload = {}) => {
+  const filePath = typeof payload === 'string' ? payload : (payload.filePath || payload.path || '');
+  if (!filePath) return { ok: false, error: '请选择 APK / AAB 文件' };
+  try {
+    return inspectContainer(filePath);
   } catch (error) {
     return { ok: false, error: error.message };
   }

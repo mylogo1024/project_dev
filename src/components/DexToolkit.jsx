@@ -14,6 +14,13 @@ const OPERATIONS = [
   { value: 'odex-decompile', label: '反编译 ODEX', hint: 'odex / vdex → 提取 dex → smali' }
 ];
 
+function formatBytes(bytes) {
+  if (!Number.isFinite(bytes) || bytes < 0) return '-';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
+}
+
 export default function DexToolkit() {
   const [status, setStatus] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -32,6 +39,10 @@ export default function DexToolkit() {
   const [packerBusy, setPackerBusy] = useState(false);
   const [launchResult, setLaunchResult] = useState(null);
   const [launchBusy, setLaunchBusy] = useState(false);
+  // 查看容器：读 APK / AAB 里的 dex 与 resources.arsc（纯 JS，不反编译）
+  const [inspectPath, setInspectPath] = useState('');
+  const [inspectResult, setInspectResult] = useState(null);
+  const [inspectBusy, setInspectBusy] = useState(false);
   // 当前任务 id：进度事件按它过滤，避免上一个任务的进度串到界面上
   const jobIdRef = useRef(null);
 
@@ -249,6 +260,44 @@ export default function DexToolkit() {
 
   const copyCommand = async (text) => {
     await copyTextWithToast(text, { successText: '命令已复制' });
+  };
+
+  const selectInspectFile = async () => {
+    try {
+      const file = await window.electronAPI.selectFiles({
+        filters: [
+          { name: 'APK / AAB', extensions: ['apk', 'aab'] },
+          { name: '所有文件', extensions: ['*'] }
+        ],
+        properties: ['openFile']
+      });
+      if (file) {
+        setInspectPath(file);
+        setInspectResult(null);
+        setError('');
+      }
+    } catch (e) {
+      setError(cleanIpcError(e, '选择文件失败'));
+    }
+  };
+
+  const runInspect = async () => {
+    if (!inspectPath) {
+      setError('请先选择 APK / AAB 文件');
+      return;
+    }
+    setError('');
+    setInspectResult(null);
+    setInspectBusy(true);
+    try {
+      const res = await window.electronAPI.dexToolkitInspect({ filePath: inspectPath });
+      if (!res?.ok) setError(res?.error || '读取 dex / arsc 失败');
+      else setInspectResult(res);
+    } catch (e) {
+      setError(cleanIpcError(e, '读取 dex / arsc 失败'));
+    } finally {
+      setInspectBusy(false);
+    }
   };
 
   if (refreshing && !status) {
@@ -513,6 +562,130 @@ export default function DexToolkit() {
                     复制
                   </button>
                 </div>
+              </div>
+            ) : null}
+          </section>
+
+          <section className="dex-panel">
+            <div className="dex-panel__head">
+              <h3>查看 dex / arsc</h3>
+              <span className="dex-panel__hint">直接读取 APK / AAB 容器，不反编译</span>
+            </div>
+            <div className="dex-fields">
+              <div className="dex-field">
+                <div className="dex-field__label">APK / AAB</div>
+                <div className="dex-field__control">
+                  <button type="button" className="btn btn-sm" onClick={selectInspectFile} disabled={inspectBusy}>
+                    选择文件
+                  </button>
+                  <span className="dex-field__meta dex-field__meta--path" title={inspectPath}>
+                    {inspectPath || '未选择'}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div className="dex-run">
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={runInspect}
+                disabled={!inspectPath || inspectBusy}
+              >
+                {inspectBusy ? '解析中…' : '查看 dex / arsc'}
+              </button>
+            </div>
+
+            {inspectResult ? (
+              <div className="dex-report">
+                <div className="dex-report__row">
+                  <span className="dex-report__label">容器</span>
+                  <span>
+                    {inspectResult.fileName}（{formatBytes(inspectResult.size)} · {inspectResult.entryCount} 个条目）
+                  </span>
+                </div>
+                <div className="dex-report__row">
+                  <span className="dex-report__label">DEX 文件</span>
+                  <span>
+                    {inspectResult.dexFileCount} 个
+                    {inspectResult.dexTruncated ? '（仅展示前 100 个）' : ''}
+                  </span>
+                </div>
+                {Array.isArray(inspectResult.dexFiles) && inspectResult.dexFiles.length ? (
+                  <div className="dex-table">
+                    <div className="dex-table__head">
+                      <span>名称</span>
+                      <span>版本</span>
+                      <span>类定义</span>
+                      <span>方法</span>
+                      <span>大小</span>
+                    </div>
+                    {inspectResult.dexFiles.map((dex) => (
+                      <div key={dex.name} className="dex-table__row">
+                        <span title={dex.name}>{dex.name}</span>
+                        <span>{dex.header ? dex.header.version : '-'}</span>
+                        <span>{dex.header ? dex.header.classDefs : '-'}</span>
+                        <span>{dex.header ? dex.header.methodIds : '-'}</span>
+                        <span>{formatBytes(dex.size)}</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="dex-table__empty">未发现 .dex 文件</div>
+                )}
+
+                <div className="dex-report__row">
+                  <span className="dex-report__label">resources.arsc</span>
+                  <span>
+                    {inspectResult.arsc
+                      ? inspectResult.arsc.error
+                        ? `解析失败：${inspectResult.arsc.error}`
+                        : formatBytes(inspectResult.arsc.size)
+                      : '未找到'}
+                  </span>
+                </div>
+                {inspectResult.arsc && !inspectResult.arsc.error ? (
+                  <>
+                    <div className="dex-report__row">
+                      <span className="dex-report__label">资源包</span>
+                      <span>
+                        {(inspectResult.arsc.packages || []).map((p) => p.name).filter(Boolean).join('、') || '-'}
+                      </span>
+                    </div>
+                    <div className="dex-report__row">
+                      <span className="dex-report__label">字符串池</span>
+                      <span>
+                        {inspectResult.arsc.stringPool
+                          ? `${inspectResult.arsc.stringPool.stringCount} 条${
+                              inspectResult.arsc.stringPool.truncated ? '（仅解析前 5000 条）' : ''
+                            }`
+                          : '-'}
+                      </span>
+                    </div>
+                    {Array.isArray(inspectResult.arsc.packages) &&
+                    inspectResult.arsc.packages.some((p) => Array.isArray(p.typeStrings) && p.typeStrings.length) ? (
+                      <div className="dex-report__row">
+                        <span className="dex-report__label">资源类型</span>
+                        <span className="dex-tags">
+                          {Array.from(
+                            new Set(inspectResult.arsc.packages.flatMap((p) => p.typeStrings || []))
+                          )
+                            .slice(0, 40)
+                            .map((t) => (
+                              <span key={t} className="dex-tag">{t}</span>
+                            ))}
+                        </span>
+                      </div>
+                    ) : null}
+                  </>
+                ) : null}
+
+                {Array.isArray(inspectResult.protoResources) && inspectResult.protoResources.length ? (
+                  <div className="dex-report__row">
+                    <span className="dex-report__label">Proto 资源</span>
+                    <span>{inspectResult.protoResources.join('、')}</span>
+                  </div>
+                ) : null}
               </div>
             ) : null}
           </section>

@@ -30,6 +30,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => ipcRenderer.removeListener('install-batch-progress', handler);
   },
   decompileApk: (inputPath, outputPath, payload) => ipcRenderer.invoke('decompile-apk', inputPath, outputPath, payload),
+  decompileApkBatch: (payload) => ipcRenderer.invoke('decompile-apk-batch', payload),
   inspectRebuildProject: (projectDir) => ipcRenderer.invoke('rebuild-package:inspect', projectDir),
   rebuildPackage: (payload) => ipcRenderer.invoke('rebuild-package', payload),
   getApkInfo: (filePath) => ipcRenderer.invoke('get-apk-info', filePath),
@@ -141,6 +142,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   dexToolkitLaunchCommand: (payload) => ipcRenderer.invoke('dex-toolkit:launch-command', payload),
   // 查壳：独立识别 APK 的加固方案与对抗特征
   dexToolkitCheckPacker: (payload) => ipcRenderer.invoke('dex-toolkit:check-packer', payload),
+  // 查看 APK / AAB 容器里的 dex 与 resources.arsc（纯 JS，不反编译）
+  dexToolkitInspect: (payload) => ipcRenderer.invoke('dex-toolkit:inspect', payload),
   onDexToolkitProgress: (callback) => {
     const handler = (event, payload) => callback(payload);
     ipcRenderer.on('dex-toolkit:progress', handler);
