@@ -476,6 +476,16 @@ app.whenReady().then(async () => {
     const reason = details?.reason || 'unknown';
     logCrash('render-process-gone', `${reason}（exitCode ${details?.exitCode ?? 'n/a'}）`);
 
+    // 渲染进程已消失，日志会话的所有者不可用：停掉会话并回收工具子进程与缓冲，避免残留拖慢性能
+    if (activeLogSession) {
+      queueLogTransition(() => {
+        if (activeLogSession && (!webContents || activeLogSession.ownerId === webContents.id)) {
+          return stopActiveLogSession(activeLogSession, 'owner-destroyed');
+        }
+        return undefined;
+      });
+    }
+
     const now = Date.now();
     if (reason === 'crashed' && now - rendererReloadAt > 30000
       && webContents && !webContents.isDestroyed()) {
@@ -650,7 +660,8 @@ async function detectDevicectl() {
 ipcMain.handle('check-environment', async () => {
   const toolSpecs = {
     adb: ['version'],
-    apktool: ['--version'],
+    // apktool 2.x 只认单横线 -version，--version 会以非零码退出并被误判为未安装
+    apktool: ['-version'],
     aapt: ['version'],
     apksigner: ['--help'],
     zipalign: null,
@@ -2933,8 +2944,8 @@ ipcMain.handle('http-request', async (event, payload = {}) => {
 
 const MAX_LOG_REMAINDER = 64 * 1024;
 const MAX_STDERR_TAIL = 8 * 1024;
-const MAX_PENDING_LOGS = 2000;
-const MAX_LOG_BATCH = 500;
+const MAX_PENDING_LOGS = 30000;
+const MAX_LOG_BATCH = 2000;
 const LOG_BATCH_INTERVAL = 100;
 let activeLogSession = null;
 let logTransition = Promise.resolve();

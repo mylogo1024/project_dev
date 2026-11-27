@@ -1,14 +1,16 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { cleanIpcError } from '../lib/errorText';
 
-const DEFAULT_LOG_LIMIT = 5000;
+const DEFAULT_LOG_LIMIT = 150000;
 const MIN_LOG_LIMIT = 100;
-const MAX_LOG_LIMIT = 50000;
+const MAX_LOG_LIMIT = 500000;
 const FLUSH_INTERVAL = 100;
-// 渲染层安全阈值：超过该行数时只渲染尾部窗口，避免数万 DOM 节点拖垮渲染进程
-const RENDER_SAFE_LIMIT = 2000;
-// 渲染层接收队列上限：渲染卡顿时丢弃最旧日志，防止内存持续膨胀
-const MAX_QUEUE_LOGS = 10000;
+// 渲染层接收队列上限：略高于最大保留上限，正常捕获不丢日志
+const MAX_QUEUE_LOGS = 600000;
+// 虚拟滚动：单行固定高度（需与 CSS .log-line 的 height 保持一致）
+const LOG_LINE_HEIGHT = 20;
+// 视口外上下各多渲染的行数，减少快速滚动时的空白
+const VIRTUAL_OVERSCAN = 30;
 const TERMINAL_STATES = new Set(['stopped', 'error']);
 
 const clampLogLimit = (value) => {
@@ -81,12 +83,18 @@ function LogViewer({ initialDevice = null }) {
   const logLimitRef = useRef(logLimit);
   const fallbackSequenceRef = useRef(0);
   const searchInputRef = useRef(null);
+  // 虚拟滚动：视口高度与滚动位置
+  const [viewportHeight, setViewportHeight] = useState(600);
+  const [scrollTop, setScrollTop] = useState(0);
 
   const running = captureState === 'running';
   const transitioning = captureState === 'starting' || captureState === 'stopping';
   const captureActive = running || transitioning;
 
   useEffect(() => {
+    // 每次进入日志页都从干净状态开始，清掉上一次可能残留的缓存
+    logQueueRef.current.length = 0;
+    queuedDropCountRef.current = 0;
     mountedRef.current = true;
     const removeLogListener = window.electronAPI.onLogData((log) => {
       const eventSessionId = getSessionId(log);
@@ -175,9 +183,15 @@ function LogViewer({ initialDevice = null }) {
       removeLogListener?.();
       removeStatusListener?.();
       window.clearInterval(flushTimer);
-      logQueueRef.current = [];
+      // 离开日志页时释放全部缓存，避免大数组常驻内存
+      logQueueRef.current.length = 0;
+      queuedDropCountRef.current = 0;
       const sessionId = activeSessionRef.current;
       activeSessionRef.current = '';
+      pendingStartRef.current = null;
+      pendingSessionIdsRef.current.clear();
+      setLogs([]);
+      setDroppedCount(0);
       if (sessionId) window.electronAPI.stopLogCapture(sessionId).catch(() => {});
     };
   }, []);
@@ -264,9 +278,25 @@ function LogViewer({ initialDevice = null }) {
 
   useEffect(() => {
     if (autoScroll && logContainerRef.current) {
-      logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
+      const el = logContainerRef.current;
+      el.scrollTop = el.scrollHeight;
     }
   }, [logs, autoScroll]);
+
+  // 虚拟滚动：记录容器可视高度，随窗口尺寸变化更新
+  useEffect(() => {
+    const el = logContainerRef.current;
+    if (!el) return undefined;
+    const update = () => setViewportHeight(el.clientHeight || 600);
+    update();
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', update);
+      return () => window.removeEventListener('resize', update);
+    }
+    const observer = new ResizeObserver(update);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
 
   const clearLogs = () => {
     logQueueRef.current = [];
@@ -301,16 +331,28 @@ function LogViewer({ initialDevice = null }) {
     });
   }, [logs, filterLevel, filterPackage, pidMap]);
 
-  // 渲染窗口：超出安全阈值时只渲染尾部，DOM 数量恒定，防止渲染进程崩溃
-  const { renderedLogs, hiddenCount } = useMemo(() => {
-    if (filteredLogs.length <= RENDER_SAFE_LIMIT) {
-      return { renderedLogs: filteredLogs, hiddenCount: 0 };
+  // 虚拟滚动：根据 scrollTop / 视口高度算出需要渲染的行区间，
+  // 视觉上仍是“设置多少条就显示多少条”（滚动条反映全量），DOM 只保留视口附近若干行。
+  const totalHeight = filteredLogs.length * LOG_LINE_HEIGHT;
+  const { renderedLogs, renderOffset } = useMemo(() => {
+    const total = filteredLogs.length;
+    if (total === 0) return { renderedLogs: [], renderOffset: 0 };
+    const visibleCount = Math.ceil(viewportHeight / LOG_LINE_HEIGHT) + VIRTUAL_OVERSCAN * 2;
+    if (visibleCount >= total) {
+      return { renderedLogs: filteredLogs, renderOffset: 0 };
     }
+    const startIndex = Math.max(
+      0,
+      Math.min(
+        Math.floor(scrollTop / LOG_LINE_HEIGHT) - VIRTUAL_OVERSCAN,
+        total - visibleCount
+      )
+    );
     return {
-      renderedLogs: filteredLogs.slice(filteredLogs.length - RENDER_SAFE_LIMIT),
-      hiddenCount: filteredLogs.length - RENDER_SAFE_LIMIT
+      renderedLogs: filteredLogs.slice(startIndex, startIndex + visibleCount),
+      renderOffset: startIndex
     };
-  }, [filteredLogs]);
+  }, [filteredLogs, viewportHeight, scrollTop]);
 
   const startLogs = async () => {
     if (!selectedDeviceId || deviceLoading) {
@@ -396,8 +438,8 @@ function LogViewer({ initialDevice = null }) {
   const saveLogs = async () => {
     try {
       const savePath = await window.electronAPI.saveFile({
-        defaultPath: `log_${new Date().toISOString().replace(/:/g, '-')}.txt`,
-        filters: [{ name: 'Text Files', extensions: ['txt'] }]
+        defaultPath: `log_${new Date().toISOString().replace(/:/g, '-')}.log`,
+        filters: [{ name: 'Log Files', extensions: ['log'] }]
       });
       if (!savePath) return;
       const content = filteredLogs.map((log) =>
@@ -425,19 +467,19 @@ function LogViewer({ initialDevice = null }) {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, []);
 
-  // 搜索导航：在 renderedLogs 中查找匹配项（用 index，随数据变化自动重算）
+  // 搜索导航：在 filteredLogs（全量）中查找匹配项，返回绝对下标
   const searchMatches = useMemo(() => {
     const kw = searchText.trim().toLowerCase();
-    if (!kw || renderedLogs.length === 0) return [];
+    if (!kw || filteredLogs.length === 0) return [];
     const matches = [];
-    for (let i = 0; i < renderedLogs.length; i++) {
-      const log = renderedLogs[i];
+    for (let i = 0; i < filteredLogs.length; i++) {
+      const log = filteredLogs[i];
       if (`${log.tag || ''} ${log.message || ''}`.toLowerCase().includes(kw)) {
         matches.push(i);
       }
     }
     return matches;
-  }, [renderedLogs, searchText]);
+  }, [filteredLogs, searchText]);
 
   // 搜索关键字或过滤数据变化时，重置到第一条匹配
   useEffect(() => {
@@ -453,13 +495,13 @@ function LogViewer({ initialDevice = null }) {
     setSearchIndex(next);
     const matchIdx = searchMatches[next];
     if (matchIdx >= 0 && logContainerRef.current) {
-      const lines = logContainerRef.current.querySelectorAll('.log-line');
-      const target = lines[matchIdx];
-      if (target) {
-        // 临时关闭自动滚动，避免新日志把视口拉回底部
-        if (autoScroll) setAutoScroll(false);
-        target.scrollIntoView({ block: 'center', behavior: 'smooth' });
-      }
+      // 临时关闭自动滚动，避免新日志把视口拉回底部
+      if (autoScroll) setAutoScroll(false);
+      const el = logContainerRef.current;
+      // 目标行在 filteredLogs 中的绝对下标 → 像素偏移，居中显示
+      const targetTop = matchIdx * LOG_LINE_HEIGHT;
+      el.scrollTop = Math.max(0, targetTop - el.clientHeight / 2 + LOG_LINE_HEIGHT / 2);
+      setScrollTop(el.scrollTop);
     }
   };
 
@@ -683,33 +725,44 @@ function LogViewer({ initialDevice = null }) {
         </div>
       </div>
 
-      <div className="log-container" ref={logContainerRef}>
+      <div
+        className="log-container"
+        ref={logContainerRef}
+        onScroll={(event) => {
+          const el = event.currentTarget;
+          if (autoScroll && el.scrollHeight - el.scrollTop - el.clientHeight > LOG_LINE_HEIGHT * 2) {
+            setAutoScroll(false);
+          }
+          setScrollTop(el.scrollTop);
+        }}
+      >
         {filteredLogs.length === 0 ? (
           <div className="log-empty">{captureActive ? '等待日志输出…' : '选择设备后点击“开始捕获”'}</div>
         ) : (
-          <>
-            {hiddenCount > 0 && (
-              <div className="log-window-note">
-                已隐藏较早的 {hiddenCount.toLocaleString()} 条，仅渲染最近 {renderedLogs.length.toLocaleString()} 条。可提高过滤精度或降低上限后查看完整历史。
-              </div>
-            )}
-            {renderedLogs.map((log, index) => {
-              const isActiveMatch =
-                searchMatches.length > 0 && searchMatches[searchIndex] === index;
-              return (
-                <div
-                  key={`${log.sessionId || 'unknown'}-${log.sequence ?? index}`}
-                  className={`log-line level-${(log.level || 'I').toLowerCase()}${isActiveMatch ? ' log-line--active-match' : ''}`}
-                >
-                  <span className="log-timestamp">{log.timestamp}</span>
-                  <span className="log-level" style={{ color: getLevelColor(log.level) }}>{log.level || 'I'}</span>
-                  <span className="log-pid">{log.pid || '—'}</span>
-                  <span className="log-tag">{highlightText(log.tag || '—', searchText)}</span>
-                  <span className="log-message">{highlightText(log.message, searchText, isActiveMatch)}</span>
-                </div>
-              );
-            })}
-          </>
+          <div className="log-virtual" style={{ height: totalHeight }}>
+            <div
+              className="log-virtual__inner"
+              style={{ transform: `translateY(${renderOffset * LOG_LINE_HEIGHT}px)` }}
+            >
+              {renderedLogs.map((log, i) => {
+                const absoluteIndex = renderOffset + i;
+                const isActiveMatch =
+                  searchMatches.length > 0 && searchMatches[searchIndex] === absoluteIndex;
+                return (
+                  <div
+                    key={`${log.sessionId || 'unknown'}-${log.sequence ?? absoluteIndex}`}
+                    className={`log-line level-${(log.level || 'I').toLowerCase()}${isActiveMatch ? ' log-line--active-match' : ''}`}
+                  >
+                    <span className="log-timestamp">{log.timestamp}</span>
+                    <span className="log-level" style={{ color: getLevelColor(log.level) }}>{log.level || 'I'}</span>
+                    <span className="log-pid">{log.pid || '—'}</span>
+                    <span className="log-tag">{highlightText(log.tag || '—', searchText)}</span>
+                    <span className="log-message">{highlightText(log.message, searchText, isActiveMatch)}</span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
         )}
       </div>
     </div>

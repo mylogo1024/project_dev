@@ -43,7 +43,7 @@ const FEATURE_CATALOG = [
     group: '包体分析',
     platforms: ALL_PLATFORMS,
     tools: [
-      { name: 'apktool', args: ['--version'], hint: 'brew install apktool' },
+      { name: 'apktool', args: ['-version'], hint: 'brew install apktool' },
       { name: 'java', args: ['-version'], hint: '安装 JDK 17+' }
     ],
     anyOf: true

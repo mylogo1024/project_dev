@@ -2403,25 +2403,30 @@ textarea.plain-secret {
   color: #8b919a;
 }
 
-.log-window-note {
-  text-align: center;
-  padding: 10px 16px;
-  margin-bottom: 6px;
-  color: #8b919a;
-  background: #1a1d23;
-  border-radius: 6px;
-  position: sticky;
+.log-virtual {
+  position: relative;
+  width: 100%;
+}
+
+.log-virtual__inner {
+  position: absolute;
   top: 0;
-  z-index: 1;
+  left: 0;
+  right: 0;
+  will-change: transform;
 }
 
 .log-line {
   display: grid;
   grid-template-columns: 138px 24px 68px minmax(90px, 180px) 1fr;
   gap: 8px;
-  padding: 1px 12px;
+  padding: 0 12px;
+  /* 固定行高：虚拟滚动依赖每行等高（须与 LOG_LINE_HEIGHT 保持一致） */
+  height: 20px;
+  line-height: 20px;
+  box-sizing: border-box;
   border-left: 3px solid transparent;
-  align-items: start;
+  align-items: center;
   color: #d7dbe0;
 }
 
@@ -2437,7 +2442,7 @@ textarea.plain-secret {
 .log-level { font-weight: 700; text-align: center; }
 .log-pid { color: #9e9e9e; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .log-tag { color: #80cbc4; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.log-message { color: inherit; overflow-wrap: anywhere; white-space: pre-wrap; }
+.log-message { color: inherit; white-space: nowrap; }
 
 .log-line--active-match {
   background: rgba(255, 213, 79, 0.18) !important;
